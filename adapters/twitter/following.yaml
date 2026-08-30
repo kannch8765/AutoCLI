@@ -71,26 +71,26 @@ pipeline:
           const seen = new Map();
           for (const req of requests) {
             try {
-              let instructions = req.data?.user?.result?.timeline?.timeline?.instructions;
-              if (!instructions) continue;
-              let addEntries = instructions.find(i => i.type === 'TimelineAddEntries')
-                || instructions.find(i => i.entries && Array.isArray(i.entries));
-              if (!addEntries) continue;
-              for (const entry of addEntries.entries) {
-                if (!entry.entryId.startsWith('user-')) continue;
-                const item = entry.content?.itemContent?.user_results?.result;
-                if (!item || item.__typename !== 'User') continue;
-                const core = item.core || {};
-                const legacy = item.legacy || {};
-                const sn = core.screen_name || legacy.screen_name || 'unknown';
-                if (!seen.has(sn)) {
-                  seen.set(sn, true);
-                  results.push({
-                    screen_name: sn,
-                    name: core.name || legacy.name || 'unknown',
-                    bio: legacy.description || item.profile_bio?.description || '',
-                    followers: legacy.followers_count || legacy.normal_followers_count || 0
-                  });
+              let instructions = req.data?.user?.result?.timeline_v2?.timeline?.instructions
+                || req.data?.user?.result?.timeline?.timeline?.instructions
+                || [];
+              for (const instruction of instructions) {
+                for (const entry of instruction.entries || []) {
+                  if (!entry.entryId.startsWith('user-')) continue;
+                  const item = entry.content?.itemContent?.user_results?.result;
+                  if (!item || item.__typename !== 'User') continue;
+                  const core = item.core || {};
+                  const legacy = item.legacy || {};
+                  const sn = core.screen_name || legacy.screen_name || 'unknown';
+                  if (!seen.has(sn)) {
+                    seen.set(sn, true);
+                    results.push({
+                      screen_name: sn,
+                      name: core.name || legacy.name || 'unknown',
+                      bio: legacy.description || item.profile_bio?.description || '',
+                      followers: legacy.followers_count || legacy.normal_followers_count || 0
+                    });
+                  }
                 }
               }
             } catch {}
