@@ -1,0 +1,30 @@
+name: PR Windows Smoke Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      checkout_ref:
+        description: Branch to build
+        required: true
+        default: fix/twitter-upstream-sync
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.checkout_ref }}
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build AutoCLI
+        run: cargo build --release -p autocli
+      - name: Package
+        shell: pwsh
+        run: Compress-Archive -Path target/release/autocli.exe -DestinationPath autocli-pr65-windows-r4.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: autocli-pr65-windows-r4
+          path: autocli-pr65-windows-r4.zip
