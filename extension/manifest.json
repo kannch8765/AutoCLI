@@ -9,7 +9,8 @@
     "tabs",
     "cookies",
     "activeTab",
-    "alarms"
+    "alarms",
+    "storage"
   ],
   "host_permissions": [
     "<all_urls>"
@@ -34,5 +35,6 @@
   "content_security_policy": {
     "extension_pages": "script-src 'self'; object-src 'self'"
   },
-  "homepage_url": "https://autocli.ai"
+  "homepage_url": "https://autocli.ai",
+  "options_page": "dist/options.html"
 }

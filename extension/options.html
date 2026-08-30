@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AutoCLI Browser Bridge Settings</title>
+  <style>
+    body { font: 14px/1.5 system-ui, sans-serif; max-width: 560px; margin: 32px auto; padding: 0 20px; }
+    label { display: block; font-weight: 600; margin-bottom: 8px; }
+    input { width: 140px; padding: 8px; }
+    button { margin-top: 16px; margin-right: 8px; padding: 8px 12px; }
+    #status { margin-top: 16px; min-height: 1.5em; }
+    .hint { color: #555; }
+  </style>
+</head>
+<body>
+  <h1>Browser Bridge</h1>
+  <p class="hint">This setting is stored separately in each Chrome profile.</p>
+  <form id="daemon-form">
+    <label for="daemon-port">Local daemon port</label>
+    <input id="daemon-port" name="daemon-port" type="number" min="1" max="65535" required />
+    <div>
+      <button type="submit">Save</button>
+      <button id="reset" type="button">Reset to 19925</button>
+    </div>
+  </form>
+  <div id="status" role="status" aria-live="polite"></div>
+  <script type="module" src="/src/options.ts"></script>
+</body>
+</html>

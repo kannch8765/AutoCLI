@@ -58,9 +58,13 @@ export interface Result {
 /** Default daemon port */
 export const DAEMON_PORT = 19925;
 export const DAEMON_HOST = 'localhost';
-export const DAEMON_WS_URL = `ws://${DAEMON_HOST}:${DAEMON_PORT}/ext`;
-/** Lightweight health-check endpoint — probed before each WebSocket attempt. */
-export const DAEMON_PING_URL = `http://${DAEMON_HOST}:${DAEMON_PORT}/ping`;
+export function daemonUrls(port: number = DAEMON_PORT) {
+  return {
+    wsUrl: `ws://${DAEMON_HOST}:${port}/ext`,
+    pingUrl: `http://${DAEMON_HOST}:${port}/ping`,
+    baseUrl: `http://${DAEMON_HOST}:${port}`,
+  };
+}
 
 /** Base reconnect delay for extension WebSocket (ms) */
 export const WS_RECONNECT_BASE_DELAY = 2000;

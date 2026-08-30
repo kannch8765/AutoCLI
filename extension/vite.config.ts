@@ -2,13 +2,17 @@ import { defineConfig } from 'vite';
 import { resolve } from 'path';
 
 export default defineConfig({
+  base: './',
   build: {
     outDir: 'dist',
     emptyOutDir: true,
     rollupOptions: {
-      input: resolve(__dirname, 'src/background.ts'),
+      input: {
+        background: resolve(__dirname, 'src/background.ts'),
+        options: resolve(__dirname, 'options.html'),
+      },
       output: {
-        entryFileNames: 'background.js',
+        entryFileNames: (chunk) => chunk.name === 'background' ? 'background.js' : 'assets/[name].js',
         format: 'es',
       },
     },
