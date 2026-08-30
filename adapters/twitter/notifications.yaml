@@ -32,8 +32,8 @@ pipeline:
   - wait: 5
 
   - scroll:
-      times: 2
-      delayMs: 2000
+      count: 2
+      delay: 2000
 
   - collect:
       parse: |
