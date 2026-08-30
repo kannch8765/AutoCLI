@@ -44,20 +44,14 @@ pipeline:
       pattern: Followers
       collect: false
 
-  # Step 5: Click the followers link (SPA navigation, preserves interceptor)
+  # Step 5: Navigate specifically to the full followers timeline.
+  # Avoid /verified_followers: it can legitimately be empty even when the
+  # account has ordinary followers. This mirrors current OpenCLI behavior.
   - evaluate: |
-      (async () => {
-        const target = data;
-        const selectors = [
-          'a[href="/' + target + '/verified_followers"]',
-          'a[href="/' + target + '/followers"]',
-        ];
-        for (const sel of selectors) {
-          const link = document.querySelector(sel);
-          if (link) { link.click(); return true; }
-        }
-        // Fallback: try navigating directly via SPA
-        window.location.href = 'https://x.com/' + target + '/followers';
+      (() => {
+        const targetPath = '/' + data + '/followers';
+        window.history.pushState({}, '', targetPath);
+        window.dispatchEvent(new PopStateEvent('popstate', { state: {} }));
         return true;
       })()
 
