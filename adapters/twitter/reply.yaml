@@ -22,20 +22,18 @@ args:
 columns: [status, message, text]
 
 pipeline:
-  # Resolve and validate the target tweet before opening X's dedicated reply composer.
+  # Open a known-safe X page first, then parse the caller-supplied URL in JS.
+  # Navigating directly to args.url is rejected by some AutoCLI/extension paths
+  # before the browser ever reaches X.
   - navigate:
-      url: ${{ args.url }}
+      url: https://x.com/home
       settleMs: 2500
 
   - evaluate: |
       (() => {
-        const url = new URL(window.location.href);
-        const host = url.hostname.toLowerCase().replace(/^www\./, '');
-        if (!['x.com', 'twitter.com', 'mobile.twitter.com'].includes(host)) {
-          throw new Error('Reply URL must point to x.com or twitter.com.');
-        }
-        const match = url.pathname.match(/^\/(?:[^/]+|i)\/status\/(\d+)\/?$/);
-        if (!match) throw new Error('Could not extract a tweet ID from the reply URL.');
+        const raw = String(${{ args.url | json }} || '').trim();
+        const match = raw.match(/^https?:\/\/(?:www\.)?(?:x\.com|twitter\.com|mobile\.twitter\.com)\/(?:[^/]+|i)\/status\/(\d+)(?:[/?#].*)?$/i);
+        if (!match) throw new Error('Reply URL must be an x.com or twitter.com status URL.');
         return match[1];
       })()
 
