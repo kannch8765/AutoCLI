@@ -22,32 +22,94 @@ args:
 columns: [status, message, text]
 
 pipeline:
+  # Resolve and validate the target tweet before opening X's dedicated reply composer.
   - navigate:
       url: ${{ args.url }}
-      settleMs: 5000
+      settleMs: 2500
+
+  - evaluate: |
+      (() => {
+        const url = new URL(window.location.href);
+        const host = url.hostname.toLowerCase().replace(/^www\./, '');
+        if (!['x.com', 'twitter.com', 'mobile.twitter.com'].includes(host)) {
+          throw new Error('Reply URL must point to x.com or twitter.com.');
+        }
+        const match = url.pathname.match(/^\/(?:[^/]+|i)\/status\/(\d+)\/?$/);
+        if (!match) throw new Error('Could not extract a tweet ID from the reply URL.');
+        return match[1];
+      })()
+
+  - navigate:
+      url: "https://x.com/compose/post?in_reply_to=${{ data }}"
+      settleMs: 2500
 
   - evaluate: |
       (async () => {
         try {
           const replyText = ${{ args.text | json }};
-          const box = document.querySelector('[data-testid="tweetTextarea_0"]');
-          if (box) {
-            box.focus();
-            document.execCommand('insertText', false, replyText);
-          } else {
-            return [{ status: 'failed', message: 'Could not find the reply text area. Are you logged in?', text: replyText }];
+          const visible = (el) => !!el && (el.offsetParent !== null || el.getClientRects().length > 0);
+          const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+          let box = null;
+          for (let i = 0; i < 30; i++) {
+            const boxes = Array.from(document.querySelectorAll('[data-testid="tweetTextarea_0"]'));
+            box = boxes.find(visible) || boxes[0] || null;
+            if (box) break;
+            await sleep(500);
+          }
+          if (!box) {
+            return [{ status: 'failed', message: 'Could not open the reply composer. Are you logged in?', text: replyText }];
           }
 
-          await new Promise(r => setTimeout(r, 1000));
+          box.focus();
+          if (!document.execCommand('insertText', false, replyText)) {
+            const transfer = new DataTransfer();
+            transfer.setData('text/plain', replyText);
+            box.dispatchEvent(new ClipboardEvent('paste', {
+              clipboardData: transfer,
+              bubbles: true,
+              cancelable: true,
+            }));
+          }
+          await sleep(1000);
 
-          const btn = document.querySelector('[data-testid="tweetButtonInline"]');
-          if (btn && !btn.disabled) {
-            btn.click();
-            await new Promise(r => setTimeout(r, 3000));
-            return [{ status: 'success', message: 'Reply posted successfully.', text: replyText }];
-          } else {
+          const normalize = (s) => String(s || '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
+          const actual = box.innerText || box.textContent || '';
+          if (!normalize(actual).includes(normalize(replyText))) {
+            return [{ status: 'failed', message: 'Could not verify reply text in the composer after typing.', text: replyText }];
+          }
+
+          for (const toast of Array.from(document.querySelectorAll('[role="alert"], [data-testid="toast"]'))) {
+            if (visible(toast)) toast.setAttribute('data-autocli-before-reply-toast', 'true');
+          }
+
+          let button = null;
+          for (let i = 0; i < 30; i++) {
+            const buttons = Array.from(document.querySelectorAll('[data-testid="tweetButton"], [data-testid="tweetButtonInline"]'));
+            button = buttons.find(el => visible(el) && !el.disabled && el.getAttribute('aria-disabled') !== 'true') || null;
+            if (button) break;
+            await sleep(500);
+          }
+          if (!button) {
             return [{ status: 'failed', message: 'Reply button is disabled or not found.', text: replyText }];
           }
+          button.click();
+
+          for (let i = 0; i < 30; i++) {
+            await sleep(500);
+            const toasts = Array.from(document.querySelectorAll('[role="alert"], [data-testid="toast"]'))
+              .filter(el => visible(el) && !el.hasAttribute('data-autocli-before-reply-toast'));
+            const success = toasts.find(el => /sent|posted|your post was sent|your tweet was sent/i.test(el.textContent || ''));
+            if (success) {
+              return [{ status: 'success', message: 'Reply posted successfully.', text: replyText }];
+            }
+            const failure = toasts.find(el => /failed|error|try again|not sent|could not/i.test(el.textContent || ''));
+            if (failure) {
+              return [{ status: 'failed', message: (failure.textContent || 'Reply failed to post.').trim(), text: replyText }];
+            }
+          }
+
+          return [{ status: 'failed', message: 'Reply submission could not be confirmed. Check the tweet before retrying; the reply may already be live.', text: replyText }];
         } catch (e) {
           return [{ status: 'failed', message: e.toString(), text: ${{ args.text | json }} }];
         }
