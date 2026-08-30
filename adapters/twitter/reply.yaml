@@ -31,9 +31,11 @@ pipeline:
 
   - evaluate: |
       (() => {
-        const raw = String(${{ args.url | json }} || '').trim();
-        const match = raw.match(/^https?:\/\/(?:www\.)?(?:x\.com|twitter\.com|mobile\.twitter\.com)\/(?:[^/]+|i)\/status\/(\d+)(?:[/?#].*)?$/i);
-        if (!match) throw new Error('Reply URL must be an x.com or twitter.com status URL.');
+        const first = String(${{ args.url | json }} || '').trim();
+        const second = String(${{ args.text | json }} || '').trim();
+        const statusRe = /^https?:\/\/(?:www\.)?(?:x\.com|twitter\.com|mobile\.twitter\.com)\/(?:[^/]+|i)\/status\/(\d+)(?:[/?#].*)?$/i;
+        const match = first.match(statusRe) || second.match(statusRe);
+        if (!match) throw new Error('Reply requires one x.com or twitter.com status URL argument.');
         return match[1];
       })()
 
@@ -44,7 +46,10 @@ pipeline:
   - evaluate: |
       (async () => {
         try {
-          const replyText = ${{ args.text | json }};
+          const first = String(${{ args.url | json }} || '').trim();
+          const second = String(${{ args.text | json }} || '').trim();
+          const statusRe = /^https?:\/\/(?:www\.)?(?:x\.com|twitter\.com|mobile\.twitter\.com)\/(?:[^/]+|i)\/status\/\d+(?:[/?#].*)?$/i;
+          const replyText = statusRe.test(first) ? second : first;
           const visible = (el) => !!el && (el.offsetParent !== null || el.getClientRects().length > 0);
           const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
