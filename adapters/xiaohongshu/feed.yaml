@@ -2,9 +2,9 @@
 # Original author: jackwener | License: Apache-2.0
 site: xiaohongshu
 name: feed
-description: "小红书首页推荐 Feed (via Pinia Store Action)"
+description: "小红书首页推荐 Feed (读取已水合的 Pinia store)"
 domain: www.xiaohongshu.com
-strategy: intercept
+strategy: cookie
 browser: true
 
 args:
@@ -17,17 +17,78 @@ columns: [title, author, likes, type, url]
 
 pipeline:
   - navigate: https://www.xiaohongshu.com/explore
-  - tap:
-      store: feed
-      action: fetchFeeds
-      capture: homefeed
-      select: data.items
-      timeout: 8
+  - wait: 2
+  - evaluate: |
+      (() => {
+        // Locate Pinia. Standard mount is #app; some builds mount elsewhere, so
+        // fall back to a full scan only when the standard node misses.
+        let pinia = null;
+        const probe = (el) => el?.__vue_app__?.config?.globalProperties?.$pinia ?? null;
+        pinia = probe(document.querySelector('#app'));
+        if (!pinia) {
+          for (const el of document.querySelectorAll('*')) {
+            pinia = probe(el);
+            if (pinia) break;
+          }
+        }
+        if (!pinia || !pinia._s) throw new Error('xiaohongshu feed: no_pinia (SPA may still be hydrating; reload /explore and retry)');
+
+        const store = pinia._s.get('feed');
+        if (!store) throw new Error('xiaohongshu feed: no_feed_store');
+
+        const feeds = store.feeds;
+        if (!Array.isArray(feeds)) throw new Error('xiaohongshu feed: feeds_not_array');
+
+        const cleanText = (value) =>
+          typeof value === 'string' ? value.trim() : value == null ? '' : String(value).trim();
+
+        const results = [];
+
+        for (const entry of feeds) {
+          if (!entry || typeof entry !== 'object') {
+            throw new Error('xiaohongshu feed: malformed feed item');
+          }
+
+          const id = cleanText(entry.id);
+          if (!id) throw new Error('xiaohongshu feed: feed item is missing note id');
+
+          // The note's signing token lives on the top-level entry. Do NOT read
+          // card.user.xsecToken — that is the author profile's token, not the
+          // note's.
+          const xsecToken = cleanText(entry.xsecToken);
+          if (!xsecToken) {
+            throw new Error('xiaohongshu feed: feed item ' + id + ' is missing xsecToken; cannot build a signed drill-down URL');
+          }
+
+          const card = entry.noteCard ?? {};
+
+          // xsec_source mirrors what XHS itself renders into feed-page note links:
+          // an empty value. Only xsec_token is validated by the note endpoint.
+          const url = new URL('https://www.xiaohongshu.com/explore/' + encodeURIComponent(id));
+          url.searchParams.set('xsec_token', xsecToken);
+          url.searchParams.set('xsec_source', '');
+
+          results.push({
+            id,
+            title: cleanText(card.displayTitle),
+            type: cleanText(card.type),
+            // Live store exposes both user.nickname and user.nickName; prefer
+            // nickname (observed populated on xhs), fall back to nickName.
+            author: cleanText(card.user?.nickname ?? card.user?.nickName),
+            likes: cleanText(card.interactInfo?.likedCount),
+            url: url.toString(),
+          });
+        }
+
+        if (results.length === 0) throw new Error('xiaohongshu feed: no feed items in the hydrated store');
+
+        return results;
+      })()
   - map:
       id: ${{ item.id }}
-      title: ${{ item.note_card.display_title }}
-      type: ${{ item.note_card.type }}
-      author: ${{ item.note_card.user.nickname }}
-      likes: ${{ item.note_card.interact_info.liked_count }}
-      url: https://www.xiaohongshu.com/explore/${{ item.id }}
+      title: ${{ item.title }}
+      type: ${{ item.type }}
+      author: ${{ item.author }}
+      likes: ${{ item.likes }}
+      url: ${{ item.url }}
   - limit: ${{ args.limit | default(20) }}
