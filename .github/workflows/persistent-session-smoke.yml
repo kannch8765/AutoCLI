@@ -1,0 +1,44 @@
+name: Persistent Session Smoke
+
+on:
+  push:
+    branches:
+      - fix/persistent-cookie-site-session
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Discovery tests
+        run: cargo test -p autocli-discovery --lib
+      - name: Build AutoCLI
+        run: cargo build --release -p autocli
+      - uses: actions/upload-artifact@v4
+        with:
+          name: autocli-windows-persistent-session
+          path: target/release/autocli.exe
+
+  extension:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install extension dependencies
+        working-directory: extension
+        run: npm ci
+      - name: Build extension
+        working-directory: extension
+        run: npm run build
+      - name: Package extension
+        run: zip -r autocli-extension-persistent-session.zip extension/dist extension/icons extension/selector extension/reader extension/manifest.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: autocli-extension-persistent-session
+          path: autocli-extension-persistent-session.zip
