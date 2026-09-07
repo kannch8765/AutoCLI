@@ -1,0 +1,39 @@
+name: Build Rednote Upstream Session Windows Package
+
+on:
+  push:
+    branches:
+      - build/rednote-upstream-session-windows-4fbb3d7
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Build AutoCLI
+        run: cargo build --release --target x86_64-pc-windows-msvc
+
+      - name: Package smoke binary
+        shell: pwsh
+        run: |
+          $commit = (git rev-parse HEAD).Trim()
+          Set-Content -Path BUILD-COMMIT.txt -Value $commit
+          Compress-Archive -Path target/x86_64-pc-windows-msvc/release/autocli.exe,BUILD-COMMIT.txt -DestinationPath autocli-rednote-upstream-session-windows.zip
+          Get-FileHash autocli-rednote-upstream-session-windows.zip -Algorithm SHA256 | Format-List
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: autocli-rednote-upstream-session-windows
+          path: autocli-rednote-upstream-session-windows.zip
+          if-no-files-found: error
