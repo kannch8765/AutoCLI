@@ -196,6 +196,13 @@ siteSession: persistent
     }
 
     #[test]
+    fn test_missing_site_session_defaults_to_ephemeral() {
+        let yaml = "site: test\nname: default-session\n";
+        let cmd = parse_yaml_adapter(yaml).unwrap();
+        assert_eq!(cmd.site_session, SiteSession::Ephemeral);
+    }
+
+    #[test]
     fn test_invalid_site_session_errors() {
         let yaml = "site: test\nname: bad\nsiteSession: forever\n";
         let err = parse_yaml_adapter(yaml).unwrap_err();
