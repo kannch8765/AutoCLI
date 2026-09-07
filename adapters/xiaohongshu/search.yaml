@@ -38,11 +38,25 @@ pipeline:
 
         const cleanText = (value) => (value || '').replace(/\s+/g, ' ').trim();
 
+        // Note containers: legacy `section.note-item` first, fallback to any
+        // `<section>` wrapping a search-result/explore link. Upstream #1506
+        // reports the class being dropped on some xhs renders.
+        const collectNoteCards = () => {
+          const classMatches = document.querySelectorAll('section.note-item');
+          if (classMatches.length > 0) return classMatches;
+          const sections = new Set();
+          for (const a of document.querySelectorAll('a[href*="/search_result/"], a[href*="/explore/"]')) {
+            const section = a.closest('section');
+            if (section) sections.add(section);
+          }
+          return sections;
+        };
+
         const results = [];
         const seen = new Set();
 
-        document.querySelectorAll('section.note-item').forEach(el => {
-          if (el.classList.contains('query-note-item')) return;
+        for (const el of collectNoteCards()) {
+          if (el.classList?.contains('query-note-item')) continue;
 
           const titleEl = el.querySelector('.title, .note-title, a.title, .footer .title span');
           const nameEl = el.querySelector('a.author .name, .name, .author-name, .nick-name, a.author');
@@ -54,19 +68,27 @@ pipeline:
             el.querySelector('a[href*="/note/"]');
 
           const url = normalizeUrl(detailLinkEl?.getAttribute('href') || '');
-          if (!url) return;
+          if (!url) continue;
 
           const key = url;
-          if (seen.has(key)) return;
+          if (seen.has(key)) continue;
           seen.add(key);
 
+          // Bare-section render keeps the caption in the anchor's first span,
+          // not in a class-named .title element.
+          let title = cleanText(titleEl?.textContent || '');
+          if (!title) {
+            const captionSpan = detailLinkEl?.querySelector('span');
+            title = cleanText(captionSpan?.textContent || '');
+          }
+
           results.push({
-            title: cleanText(titleEl?.textContent || ''),
+            title,
             author: cleanText(nameEl?.textContent || ''),
             likes: cleanText(likesEl?.textContent || '0'),
             url,
           });
-        });
+        }
 
         if (loginWall) throw new Error('Xiaohongshu search results are blocked behind a login wall');
 
