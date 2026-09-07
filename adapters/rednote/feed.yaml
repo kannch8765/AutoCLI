@@ -6,7 +6,6 @@ description: "REDnote 首页推荐 Feed (读取已水合的 Pinia store)"
 domain: www.rednote.com
 strategy: cookie
 browser: true
-siteSession: persistent
 
 args:
   limit:

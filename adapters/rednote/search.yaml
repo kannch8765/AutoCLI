@@ -6,7 +6,6 @@ description: "搜索 REDnote 笔记"
 domain: www.rednote.com
 strategy: cookie
 browser: true
-siteSession: persistent
 
 args:
   query:
