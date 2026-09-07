@@ -1,0 +1,29 @@
+name: Final Rednote Persistent Smoke
+
+on:
+  push:
+    branches:
+      - fix/persistent-cookie-site-session
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Discovery tests
+        run: cargo test -p autocli-discovery
+      - name: AutoCLI compile check
+        run: cargo check -p autocli
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install extension dependencies
+        working-directory: extension
+        run: npm ci
+      - name: Persistent-session extension regressions
+        working-directory: extension
+        run: npx --yes vitest@3.2.4 run src/background.test.ts --maxWorkers=1 --minWorkers=1
+      - name: Build extension
+        working-directory: extension
+        run: npm run build
