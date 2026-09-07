@@ -89,7 +89,7 @@ function createChromeMock() {
       onStartup: { addListener: vi.fn() } as Listener<() => void>,
       onMessage: { addListener: vi.fn() } as Listener<(...args: any[]) => void>,
       onConnect: { addListener: vi.fn() } as Listener<(...args: any[]) => void>,
-      getManifest: vi.fn(() => ({ version: '1.5.6' })),
+      getManifest: vi.fn(() => ({ version: '1.5.7' })),
     },
     action: {
       onClicked: { addListener: vi.fn() } as Listener<(...args: any[]) => void>,
