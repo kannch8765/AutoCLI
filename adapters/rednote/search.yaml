@@ -1,0 +1,118 @@
+# Adapter logic derived from OpenCLI (https://github.com/jackwener/opencli)
+# Original author: jackwener | License: Apache-2.0
+site: rednote
+name: search
+description: "搜索 REDnote 笔记"
+domain: www.rednote.com
+strategy: cookie
+browser: true
+siteSession: persistent
+
+args:
+  query:
+    positional: true
+    type: string
+    required: true
+    description: Search keyword
+  limit:
+    type: int
+    default: 20
+    description: Number of results
+
+columns: [rank, title, author, likes, url]
+
+pipeline:
+  - navigate: https://www.rednote.com/search_result?keyword=${{ args.query | urlencode }}&source=web_search_result_notes
+  - wait: 3
+  - scroll:
+      times: 2
+  - evaluate: |
+      (() => {
+        const hasVisibleLoginModal = () => {
+          const candidates = document.querySelectorAll(
+            '[class*="login-modal"], [class*="LoginModal"], [class*="login-container"], [class*="LoginContainer"], dialog[role="dialog"]'
+          );
+          for (const el of candidates) {
+            if (!(el instanceof HTMLElement)) continue;
+            const rect = el.getBoundingClientRect();
+            if (rect.width <= 0 || rect.height <= 0) continue;
+            const style = getComputedStyle(el);
+            if (style.display === 'none' || style.visibility === 'hidden') continue;
+            return true;
+          }
+          return false;
+        };
+        const loginWall = /登录后查看搜索结果|请登录/.test(document.body.innerText || '') || hasVisibleLoginModal();
+
+        const normalizeUrl = (href) => {
+          if (!href) return '';
+          if (href.startsWith('http://') || href.startsWith('https://')) return href;
+          if (href.startsWith('/')) return 'https://www.rednote.com' + href;
+          return '';
+        };
+
+        const cleanText = (value) => (value || '').replace(/\s+/g, ' ').trim();
+
+        // Note containers: legacy `section.note-item` first, fallback to any
+        // `<section>` wrapping a search-result/explore link. Upstream #1506
+        // reports the class being dropped on some XHS/REDnote renders.
+        const collectNoteCards = () => {
+          const classMatches = document.querySelectorAll('section.note-item');
+          if (classMatches.length > 0) return classMatches;
+          const sections = new Set();
+          for (const a of document.querySelectorAll('a[href*="/search_result/"], a[href*="/explore/"]')) {
+            const section = a.closest('section');
+            if (section) sections.add(section);
+          }
+          return sections;
+        };
+
+        const results = [];
+        const seen = new Set();
+
+        for (const el of collectNoteCards()) {
+          if (el.classList?.contains('query-note-item')) continue;
+
+          const titleEl = el.querySelector('.title, .note-title, a.title, .footer .title span');
+          const nameEl = el.querySelector('a.author .name, .name, .author-name, .nick-name, a.author');
+          const likesEl = el.querySelector('.count, .like-count, .like-wrapper .count');
+          const detailLinkEl =
+            el.querySelector('a.cover.mask') ||
+            el.querySelector('a[href*="/search_result/"]') ||
+            el.querySelector('a[href*="/explore/"]') ||
+            el.querySelector('a[href*="/note/"]');
+
+          const url = normalizeUrl(detailLinkEl?.getAttribute('href') || '');
+          if (!url) continue;
+
+          const key = url;
+          if (seen.has(key)) continue;
+          seen.add(key);
+
+          // Bare-section render keeps the caption in the anchor's first span,
+          // not in a class-named .title element.
+          let title = cleanText(titleEl?.textContent || '');
+          if (!title) {
+            const captionSpan = detailLinkEl?.querySelector('span');
+            title = cleanText(captionSpan?.textContent || '');
+          }
+
+          results.push({
+            title,
+            author: cleanText(nameEl?.textContent || ''),
+            likes: cleanText(likesEl?.textContent || '0'),
+            url,
+          });
+        }
+
+        if (loginWall) throw new Error('Rednote search results are blocked behind a login wall');
+
+        return results;
+      })()
+  - map:
+      rank: ${{ index + 1 }}
+      title: ${{ item.title }}
+      author: ${{ item.author }}
+      likes: ${{ item.likes }}
+      url: ${{ item.url }}
+  - limit: ${{ args.limit | default(20) }}
