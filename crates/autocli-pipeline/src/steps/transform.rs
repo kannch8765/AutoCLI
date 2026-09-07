@@ -394,6 +394,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_map_step_preserves_array_values() {
+        let step = MapStep;
+        let data = json!([{
+            "author": "Alice",
+            "images": ["https://img.example/one.jpg", "https://img.example/two.jpg"]
+        }]);
+        let params = json!({
+            "author": "${{ item.author }}",
+            "images": "${{ item.images }}"
+        });
+        let result = step
+            .execute(None, &params, &data, &empty_args())
+            .await
+            .unwrap();
+        assert_eq!(
+            result,
+            json!([{
+                "author": "Alice",
+                "images": ["https://img.example/one.jpg", "https://img.example/two.jpg"]
+            }])
+        );
+    }
+
+    #[tokio::test]
     async fn test_filter_step() {
         let step = FilterStep;
         let data = json!([

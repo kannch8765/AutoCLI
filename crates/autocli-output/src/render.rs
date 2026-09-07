@@ -83,6 +83,23 @@ mod tests {
     }
 
     #[test]
+    fn test_render_table_handles_array_cell_values() {
+        let data = json!([{
+            "author": "Alice",
+            "images": ["https://img.example/one.jpg", "https://img.example/two.jpg"]
+        }]);
+        let opts = RenderOptions {
+            format: OutputFormat::Table,
+            columns: Some(vec!["author".to_string(), "images".to_string()]),
+            ..Default::default()
+        };
+        let out = render(&data, &opts);
+        assert!(out.contains("Alice"));
+        assert!(out.contains("https://img.example/one.jpg"));
+        assert!(out.contains("https://img.example/two.jpg"));
+    }
+
+    #[test]
     fn test_render_json_format() {
         let data = json!({"name": "Alice"});
         let opts = RenderOptions {

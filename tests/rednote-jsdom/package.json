@@ -1,0 +1,11 @@
+{
+  "name": "autocli-rednote-jsdom-fixtures",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node rednote-adapters.test.mjs"
+  },
+  "devDependencies": {
+    "jsdom": "30.0.1"
+  }
+}

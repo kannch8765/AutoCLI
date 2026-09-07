@@ -40,3 +40,37 @@ fn rednote_feed_builds_signed_rednote_urls_and_persists_session() {
     assert!(pipeline.contains("entry.xsecToken"));
     assert!(!pipeline.contains("www.xiaohongshu.com"));
 }
+
+fn assert_rednote_detail_adapter(name: &str, yaml: &str) {
+    let command = parse_yaml_adapter(yaml).expect("parse rednote detail adapter");
+    assert_eq!(command.site, "rednote");
+    assert_eq!(command.name, name);
+    assert_eq!(command.domain.as_deref(), Some("www.rednote.com"));
+    assert_eq!(command.strategy, Strategy::Cookie);
+    assert_eq!(command.site_session, SiteSession::Persistent);
+    let pipeline = pipeline_text(&command);
+    assert!(pipeline.contains("args.note_url"));
+    assert!(pipeline.contains("SECURITY_BLOCK"));
+    assert!(!pipeline.contains("www.xiaohongshu.com"));
+}
+
+#[test]
+fn rednote_note_stays_on_rednote_host_and_persists_session() {
+    assert_rednote_detail_adapter(
+        "note",
+        include_str!("../../../adapters/rednote/note.yaml"),
+    );
+}
+
+#[test]
+fn rednote_comments_stays_on_rednote_host_and_persists_session() {
+    let yaml = include_str!("../../../adapters/rednote/comments.yaml");
+    assert_rednote_detail_adapter("comments", yaml);
+    let command = parse_yaml_adapter(yaml).expect("parse rednote comments adapter");
+    let pipeline = pipeline_text(&command);
+    assert!(pipeline.contains("stall >= 6"));
+    assert!(pipeline.contains("i < 60"));
+    assert!(pipeline.contains("Math.random() * 1200"));
+    assert!(pipeline.contains("reply_to"));
+    assert!(pipeline.contains("MALFORMED_ROW"));
+}
