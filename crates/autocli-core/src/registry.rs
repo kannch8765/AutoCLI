@@ -58,7 +58,7 @@ impl Registry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{NavigateBefore, Strategy};
+    use crate::{NavigateBefore, SiteSession, Strategy};
 
     fn test_cmd(site: &str, name: &str) -> CliCommand {
         CliCommand {
@@ -74,6 +74,7 @@ mod tests {
             func: None,
             timeout_seconds: None,
             navigate_before: NavigateBefore::default(),
+            site_session: SiteSession::Ephemeral,
         }
     }
 

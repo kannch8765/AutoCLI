@@ -11,7 +11,7 @@ mod value_ext;
 
 pub use strategy::Strategy;
 pub use args::{ArgDef, ArgType};
-pub use command::{AdapterFunc, CliCommand, CommandArgs, NavigateBefore};
+pub use command::{AdapterFunc, CliCommand, CommandArgs, NavigateBefore, SiteSession};
 pub use registry::Registry;
 pub use error::CliError;
 pub use page::{

@@ -1,4 +1,4 @@
-use autocli_core::{ArgDef, ArgType, CliCommand, CliError, NavigateBefore, Strategy};
+use autocli_core::{ArgDef, ArgType, CliCommand, CliError, NavigateBefore, SiteSession, Strategy};
 use serde_json::Value;
 
 /// Parse a YAML adapter file content into a CliCommand.
@@ -35,6 +35,18 @@ pub fn parse_yaml_adapter(content: &str) -> Result<CliCommand, CliError> {
             serde_json::from_value(Value::String(s.to_string())).unwrap_or(Strategy::Public)
         }
         None => Strategy::Public,
+    };
+
+    let site_session = match raw.get("siteSession").and_then(|v| v.as_str()) {
+        None | Some("ephemeral") => SiteSession::Ephemeral,
+        Some("persistent") => SiteSession::Persistent,
+        Some(other) => {
+            return Err(CliError::AdapterLoad {
+                message: format!("Invalid siteSession '{}': expected 'ephemeral' or 'persistent'", other),
+                suggestions: vec![],
+                source: None,
+            });
+        }
     };
 
     // Parse args — in YAML they're a map: { limit: { type: int, default: 20 } }
@@ -80,6 +92,7 @@ pub fn parse_yaml_adapter(content: &str) -> Result<CliCommand, CliError> {
         func: None,
         timeout_seconds: raw.get("timeoutSeconds").and_then(|v| v.as_u64()),
         navigate_before: NavigateBefore::default(),
+        site_session,
     })
 }
 
@@ -173,11 +186,20 @@ name: hot
 description: Hot videos
 strategy: cookie
 domain: www.bilibili.com
+siteSession: persistent
 "#;
         let cmd = parse_yaml_adapter(yaml).unwrap();
         assert_eq!(cmd.strategy, Strategy::Cookie);
         assert!(cmd.browser); // cookie strategy implies browser
         assert_eq!(cmd.domain, Some("www.bilibili.com".to_string()));
+        assert_eq!(cmd.site_session, SiteSession::Persistent);
+    }
+
+    #[test]
+    fn test_invalid_site_session_errors() {
+        let yaml = "site: test\nname: bad\nsiteSession: forever\n";
+        let err = parse_yaml_adapter(yaml).unwrap_err();
+        assert!(err.to_string().contains("Invalid siteSession"));
     }
 
     #[test]

@@ -6,6 +6,7 @@ description: "小红书首页推荐 Feed (via Pinia Store Action)"
 domain: www.xiaohongshu.com
 strategy: intercept
 browser: true
+siteSession: persistent
 
 args:
   limit:

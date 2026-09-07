@@ -6,6 +6,7 @@ description: "搜索小红书笔记"
 domain: www.xiaohongshu.com
 strategy: cookie
 browser: true
+siteSession: persistent
 
 args:
   query:

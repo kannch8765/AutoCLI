@@ -86,6 +86,12 @@ function createChromeMock() {
     runtime: {
       onInstalled: { addListener: vi.fn() } as Listener<() => void>,
       onStartup: { addListener: vi.fn() } as Listener<() => void>,
+      onMessage: { addListener: vi.fn() } as Listener<(...args: any[]) => void>,
+      onConnect: { addListener: vi.fn() } as Listener<(...args: any[]) => void>,
+      getManifest: vi.fn(() => ({ version: '1.5.6' })),
+    },
+    action: {
+      onClicked: { addListener: vi.fn() } as Listener<(...args: any[]) => void>,
     },
     cookies: {
       getAll: vi.fn(async () => []),
@@ -150,4 +156,34 @@ describe('background tab isolation', () => {
       expect.objectContaining({ workspace: 'site:zhihu', windowId: 2 }),
     ]));
   });
+  it('does not idle-close persistent site workspaces', async () => {
+    vi.useFakeTimers();
+    const { chrome } = createChromeMock();
+    vi.stubGlobal('chrome', chrome);
+
+    const mod = await import('./background');
+    mod.__test__.setAutomationWindowId('site:xiaohongshu', 1);
+    mod.__test__.resetWindowIdleTimer('site:xiaohongshu');
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(chrome.windows.remove).not.toHaveBeenCalled();
+    expect(mod.__test__.getSession('site:xiaohongshu')?.idleDeadlineAt).toBe(Number.POSITIVE_INFINITY);
+    vi.useRealTimers();
+  });
+
+  it('still idle-closes one-shot workspaces', async () => {
+    vi.useFakeTimers();
+    const { chrome } = createChromeMock();
+    vi.stubGlobal('chrome', chrome);
+
+    const mod = await import('./background');
+    mod.__test__.setAutomationWindowId('default', 1);
+    mod.__test__.resetWindowIdleTimer('default');
+
+    await vi.advanceTimersByTimeAsync(30_001);
+    expect(chrome.windows.remove).toHaveBeenCalledWith(1);
+    expect(mod.__test__.getSession('default')).toBeNull();
+    vi.useRealTimers();
+  });
+
 });

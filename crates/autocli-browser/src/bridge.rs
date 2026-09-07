@@ -31,12 +31,22 @@ impl BrowserBridge {
 
     /// Connect to the daemon, starting it if necessary, and return a trait-object page.
     pub async fn connect(&mut self) -> Result<Arc<dyn IPage>, CliError> {
-        Ok(self.connect_daemon_page().await?)
+        Ok(self.connect_daemon_page_with_workspace("default").await?)
+    }
+
+    /// Connect using a named automation workspace. Stable site workspaces allow
+    /// interactive adapters to retain tab-local auth/session state across CLI runs.
+    pub async fn connect_with_workspace(&mut self, workspace: &str) -> Result<Arc<dyn IPage>, CliError> {
+        Ok(self.connect_daemon_page_with_workspace(workspace).await?)
     }
 
     /// Connect and return the concrete `DaemonPage` so callers can use
     /// daemon-specific methods (e.g. `read_article`) not on the `IPage` trait.
     pub async fn connect_daemon_page(&mut self) -> Result<Arc<DaemonPage>, CliError> {
+        self.connect_daemon_page_with_workspace("default").await
+    }
+
+    pub async fn connect_daemon_page_with_workspace(&mut self, workspace: &str) -> Result<Arc<DaemonPage>, CliError> {
         let client = Arc::new(DaemonClient::new(self.port));
 
         // Step 1: Check Chrome is running
@@ -62,7 +72,7 @@ impl BrowserBridge {
 
         // Step 3: Wait up to 5s for extension to connect
         if self.poll_extension(&client, EXTENSION_INITIAL_WAIT, false).await {
-            return Ok(Arc::new(DaemonPage::new(client, "default")));
+            return Ok(Arc::new(DaemonPage::new(client, workspace)));
         }
 
         // Step 4: Extension not connected — try to wake up Chrome
@@ -72,7 +82,7 @@ impl BrowserBridge {
 
         // Step 5: Wait remaining 25s with progress
         if self.poll_extension(&client, EXTENSION_REMAINING_WAIT, true).await {
-            return Ok(Arc::new(DaemonPage::new(client, "default")));
+            return Ok(Arc::new(DaemonPage::new(client, workspace)));
         }
 
         warn!("Chrome extension is not connected to the daemon");

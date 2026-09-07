@@ -136,7 +136,8 @@ function scheduleReconnect(): void {
 // ─── Automation window isolation ─────────────────────────────────────
 // All autocli operations happen in a dedicated Chrome window so the
 // user's active browsing session is never touched.
-// The window auto-closes after 120s of idle (no commands).
+// One-shot windows auto-close after idle. Persistent site workspaces stay open
+// until explicitly closed, matching adapter siteSession semantics.
 
 type AutomationSession = {
   windowId: number;
@@ -145,7 +146,11 @@ type AutomationSession = {
 };
 
 const automationSessions = new Map<string, AutomationSession>();
-const WINDOW_IDLE_TIMEOUT = 30000; // 30s — quick cleanup after command finishes
+const WINDOW_IDLE_TIMEOUT = 30000; // 30s — quick cleanup after one-shot commands
+
+function isPersistentSiteWorkspace(workspace: string): boolean {
+  return workspace.startsWith('site:');
+}
 
 function getWorkspaceKey(workspace?: string): string {
   return workspace?.trim() || 'default';
@@ -155,6 +160,11 @@ function resetWindowIdleTimer(workspace: string): void {
   const session = automationSessions.get(workspace);
   if (!session) return;
   if (session.idleTimer) clearTimeout(session.idleTimer);
+  if (isPersistentSiteWorkspace(workspace)) {
+    session.idleTimer = null;
+    session.idleDeadlineAt = Number.POSITIVE_INFINITY;
+    return;
+  }
   session.idleDeadlineAt = Date.now() + WINDOW_IDLE_TIMEOUT;
   session.idleTimer = setTimeout(async () => {
     const current = automationSessions.get(workspace);
@@ -837,6 +847,7 @@ export const __test__ = {
   handleSessions,
   resolveTabId,
   resetWindowIdleTimer,
+  isPersistentSiteWorkspace,
   getSession: (workspace: string = 'default') => automationSessions.get(workspace) ?? null,
   getAutomationWindowId: (workspace: string = 'default') => automationSessions.get(workspace)?.windowId ?? null,
   setAutomationWindowId: (workspace: string, windowId: number | null) => {
