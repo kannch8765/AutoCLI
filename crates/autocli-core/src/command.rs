@@ -30,6 +30,13 @@ impl Default for NavigateBefore {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SiteSession {
+    #[default]
+    Ephemeral,
+    Persistent,
+}
+
 #[derive(Clone)]
 pub struct CliCommand {
     pub site: String,
@@ -44,6 +51,7 @@ pub struct CliCommand {
     pub func: Option<AdapterFunc>,
     pub timeout_seconds: Option<u64>,
     pub navigate_before: NavigateBefore,
+    pub site_session: SiteSession,
 }
 
 impl CliCommand {
@@ -82,6 +90,7 @@ impl std::fmt::Debug for CliCommand {
             .field("name", &self.name)
             .field("strategy", &self.strategy)
             .field("browser", &self.browser)
+            .field("site_session", &self.site_session)
             .field("has_func", &self.func.is_some())
             .field("has_pipeline", &self.pipeline.is_some())
             .finish()

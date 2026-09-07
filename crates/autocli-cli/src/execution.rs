@@ -1,4 +1,4 @@
-use autocli_core::{CliCommand, CliError, IPage};
+use autocli_core::{CliCommand, CliError, IPage, SiteSession};
 use autocli_pipeline::{execute_pipeline, steps::register_all_steps, StepRegistry};
 use autocli_browser::BrowserBridge;
 use serde_json::Value;
@@ -57,7 +57,12 @@ async fn execute_command_inner(
     if cmd.needs_browser() {
         // Browser session
         let mut bridge = BrowserBridge::new(daemon_port());
-        let page = bridge.connect().await?;
+        let persistent_site_session = cmd.site_session == SiteSession::Persistent;
+        let page = if persistent_site_session {
+            bridge.connect_with_workspace(&format!("site:{}", cmd.site)).await?
+        } else {
+            bridge.connect().await?
+        };
 
         // Pre-navigate to domain if set, but ONLY if the pipeline doesn't
         // start with its own navigate step (to avoid double navigation).
@@ -86,8 +91,12 @@ async fn execute_command_inner(
             )))
         };
 
-        // Close the automation tab/window after command completes
-        let _ = page.close().await;
+        // One-shot adapters release their automation window at command end.
+        // Persistent site sessions intentionally retain the window/tab so sites
+        // that keep auth in tab/session storage survive across CLI invocations.
+        if !persistent_site_session {
+            let _ = page.close().await;
+        }
 
         result
     } else {

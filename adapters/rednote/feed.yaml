@@ -1,9 +1,9 @@
 # Adapter logic derived from OpenCLI (https://github.com/jackwener/opencli)
 # Original author: jackwener | License: Apache-2.0
-site: xiaohongshu
+site: rednote
 name: feed
-description: "小红书首页推荐 Feed (读取已水合的 Pinia store)"
-domain: www.xiaohongshu.com
+description: "REDnote 首页推荐 Feed (读取已水合的 Pinia store)"
+domain: www.rednote.com
 strategy: cookie
 browser: true
 siteSession: persistent
@@ -17,7 +17,7 @@ args:
 columns: [title, author, likes, type, url]
 
 pipeline:
-  - navigate: https://www.xiaohongshu.com/explore
+  - navigate: https://www.rednote.com/explore
   - wait: 2
   - evaluate: |
       (() => {
@@ -32,13 +32,13 @@ pipeline:
             if (pinia) break;
           }
         }
-        if (!pinia || !pinia._s) throw new Error('xiaohongshu feed: no_pinia (SPA may still be hydrating; reload /explore and retry)');
+        if (!pinia || !pinia._s) throw new Error('rednote feed: no_pinia (SPA may still be hydrating; reload /explore and retry)');
 
         const store = pinia._s.get('feed');
-        if (!store) throw new Error('xiaohongshu feed: no_feed_store');
+        if (!store) throw new Error('rednote feed: no_feed_store');
 
         const feeds = store.feeds;
-        if (!Array.isArray(feeds)) throw new Error('xiaohongshu feed: feeds_not_array');
+        if (!Array.isArray(feeds)) throw new Error('rednote feed: feeds_not_array');
 
         const cleanText = (value) =>
           typeof value === 'string' ? value.trim() : value == null ? '' : String(value).trim();
@@ -47,25 +47,25 @@ pipeline:
 
         for (const entry of feeds) {
           if (!entry || typeof entry !== 'object') {
-            throw new Error('xiaohongshu feed: malformed feed item');
+            throw new Error('rednote feed: malformed feed item');
           }
 
           const id = cleanText(entry.id);
-          if (!id) throw new Error('xiaohongshu feed: feed item is missing note id');
+          if (!id) throw new Error('rednote feed: feed item is missing note id');
 
           // The note's signing token lives on the top-level entry. Do NOT read
           // card.user.xsecToken — that is the author profile's token, not the
           // note's.
           const xsecToken = cleanText(entry.xsecToken);
           if (!xsecToken) {
-            throw new Error('xiaohongshu feed: feed item ' + id + ' is missing xsecToken; cannot build a signed drill-down URL');
+            throw new Error('rednote feed: feed item ' + id + ' is missing xsecToken; cannot build a signed drill-down URL');
           }
 
           const card = entry.noteCard ?? {};
 
-          // xsec_source mirrors what XHS itself renders into feed-page note links:
+          // xsec_source mirrors what XHS/REDnote renders into feed-page note links:
           // an empty value. Only xsec_token is validated by the note endpoint.
-          const url = new URL('https://www.xiaohongshu.com/explore/' + encodeURIComponent(id));
+          const url = new URL('https://www.rednote.com/explore/' + encodeURIComponent(id));
           url.searchParams.set('xsec_token', xsecToken);
           url.searchParams.set('xsec_source', '');
 
@@ -74,14 +74,14 @@ pipeline:
             title: cleanText(card.displayTitle),
             type: cleanText(card.type),
             // Live store exposes both user.nickname and user.nickName; prefer
-            // nickname (observed populated on xhs), fall back to nickName.
+            // nickname (observed populated on XHS/REDnote), fall back to nickName.
             author: cleanText(card.user?.nickname ?? card.user?.nickName),
             likes: cleanText(card.interactInfo?.likedCount),
             url: url.toString(),
           });
         }
 
-        if (results.length === 0) throw new Error('xiaohongshu feed: no feed items in the hydrated store');
+        if (results.length === 0) throw new Error('rednote feed: no feed items in the hydrated store');
 
         return results;
       })()

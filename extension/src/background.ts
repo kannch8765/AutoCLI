@@ -136,7 +136,8 @@ function scheduleReconnect(): void {
 // ─── Automation window isolation ─────────────────────────────────────
 // All autocli operations happen in a dedicated Chrome window so the
 // user's active browsing session is never touched.
-// The window auto-closes after 120s of idle (no commands).
+// One-shot windows auto-close after idle. Persistent site workspaces stay open
+// until explicitly closed, matching adapter siteSession semantics.
 
 type AutomationSession = {
   windowId: number;
@@ -145,7 +146,75 @@ type AutomationSession = {
 };
 
 const automationSessions = new Map<string, AutomationSession>();
-const WINDOW_IDLE_TIMEOUT = 30000; // 30s — quick cleanup after command finishes
+const WINDOW_IDLE_TIMEOUT = 30000; // 30s — quick cleanup after one-shot commands
+const PERSISTENT_SESSION_KEY_PREFIX = 'autocli:persistent-site-session:';
+
+function isPersistentSiteWorkspace(workspace: string): boolean {
+  return workspace.startsWith('site:');
+}
+
+function persistentSessionStorageKey(workspace: string): string {
+  return `${PERSISTENT_SESSION_KEY_PREFIX}${encodeURIComponent(workspace)}`;
+}
+
+async function readPersistentSession(workspace: string): Promise<{ windowId: number } | null> {
+  if (!isPersistentSiteWorkspace(workspace)) return null;
+  const key = persistentSessionStorageKey(workspace);
+  try {
+    const stored = await chrome.storage.session.get(key);
+    const value = stored[key];
+    if (!value || typeof value !== 'object') return null;
+    const windowId = (value as { windowId?: unknown }).windowId;
+    return Number.isInteger(windowId) ? { windowId: windowId as number } : null;
+  } catch (err) {
+    console.warn(`[autocli] Failed to read persistent session ${workspace}: ${err}`);
+    return null;
+  }
+}
+
+async function writePersistentSession(workspace: string, windowId: number): Promise<void> {
+  if (!isPersistentSiteWorkspace(workspace)) return;
+  const key = persistentSessionStorageKey(workspace);
+  try {
+    await chrome.storage.session.set({ [key]: { windowId } });
+  } catch (err) {
+    console.warn(`[autocli] Failed to persist session ${workspace}: ${err}`);
+  }
+}
+
+async function removePersistentSession(workspace: string, expectedWindowId?: number): Promise<void> {
+  if (!isPersistentSiteWorkspace(workspace)) return;
+  const key = persistentSessionStorageKey(workspace);
+  try {
+    if (expectedWindowId !== undefined) {
+      const stored = await readPersistentSession(workspace);
+      if (!stored || stored.windowId !== expectedWindowId) return;
+    }
+    await chrome.storage.session.remove(key);
+  } catch (err) {
+    console.warn(`[autocli] Failed to remove persistent session ${workspace}: ${err}`);
+  }
+}
+
+async function restorePersistentSession(workspace: string): Promise<AutomationSession | null> {
+  if (!isPersistentSiteWorkspace(workspace)) return null;
+  const stored = await readPersistentSession(workspace);
+  if (!stored) return null;
+  try {
+    await chrome.windows.get(stored.windowId);
+    const session: AutomationSession = {
+      windowId: stored.windowId,
+      idleTimer: null,
+      idleDeadlineAt: Number.POSITIVE_INFINITY,
+    };
+    automationSessions.set(workspace, session);
+    console.log(`[autocli] Restored automation window ${stored.windowId} (${workspace}) after service-worker restart`);
+    return session;
+  } catch {
+    await removePersistentSession(workspace, stored.windowId);
+    return null;
+  }
+}
 
 function getWorkspaceKey(workspace?: string): string {
   return workspace?.trim() || 'default';
@@ -155,6 +224,11 @@ function resetWindowIdleTimer(workspace: string): void {
   const session = automationSessions.get(workspace);
   if (!session) return;
   if (session.idleTimer) clearTimeout(session.idleTimer);
+  if (isPersistentSiteWorkspace(workspace)) {
+    session.idleTimer = null;
+    session.idleDeadlineAt = Number.POSITIVE_INFINITY;
+    return;
+  }
   session.idleDeadlineAt = Date.now() + WINDOW_IDLE_TIMEOUT;
   session.idleTimer = setTimeout(async () => {
     const current = automationSessions.get(workspace);
@@ -174,17 +248,24 @@ function resetWindowIdleTimer(workspace: string): void {
  *    This avoids an extra blank-page→target-domain navigation on first command.
  */
 async function getAutomationWindow(workspace: string, initialUrl?: string): Promise<number> {
-  // Check if our window is still alive
+  // Check if our in-memory window is still alive.
   const existing = automationSessions.get(workspace);
   if (existing) {
     try {
       await chrome.windows.get(existing.windowId);
       return existing.windowId;
     } catch {
-      // Window was closed by user
+      // Window was closed by user.
       automationSessions.delete(workspace);
+      await removePersistentSession(workspace, existing.windowId);
     }
   }
+
+  // MV3 service workers can restart between CLI invocations. Persistent site
+  // sessions recover their owned window from chrome.storage.session before
+  // creating a replacement, preserving tab/session-local auth state.
+  const restored = await restorePersistentSession(workspace);
+  if (restored) return restored.windowId;
 
   // Use the target URL directly if it's a safe navigation URL, otherwise fall back to about:blank.
   const startUrl = (initialUrl && isSafeNavigationUrl(initialUrl)) ? initialUrl : BLANK_PAGE;
@@ -204,6 +285,7 @@ async function getAutomationWindow(workspace: string, initialUrl?: string): Prom
     idleDeadlineAt: Date.now() + WINDOW_IDLE_TIMEOUT,
   };
   automationSessions.set(workspace, session);
+  await writePersistentSession(workspace, session.windowId);
   console.log(`[autocli] Created automation window ${session.windowId} (${workspace}, start=${startUrl})`);
   resetWindowIdleTimer(workspace);
   // Wait for the initial tab to finish loading instead of a fixed 200ms sleep.
@@ -237,6 +319,7 @@ chrome.windows.onRemoved.addListener((windowId) => {
       console.log(`[autocli] Automation window closed (${workspace})`);
       if (session.idleTimer) clearTimeout(session.idleTimer);
       automationSessions.delete(workspace);
+      void removePersistentSession(workspace, windowId);
     }
   }
 });
@@ -716,6 +799,7 @@ async function handleCloseWindow(cmd: Command, workspace: string): Promise<Resul
     if (session.idleTimer) clearTimeout(session.idleTimer);
     automationSessions.delete(workspace);
   }
+  await removePersistentSession(workspace, session?.windowId);
   return { id: cmd.id, ok: true, data: { closed: true } };
 }
 
@@ -837,6 +921,9 @@ export const __test__ = {
   handleSessions,
   resolveTabId,
   resetWindowIdleTimer,
+  getAutomationWindow,
+  restorePersistentSession,
+  isPersistentSiteWorkspace,
   getSession: (workspace: string = 'default') => automationSessions.get(workspace) ?? null,
   getAutomationWindowId: (workspace: string = 'default') => automationSessions.get(workspace)?.windowId ?? null,
   setAutomationWindowId: (workspace: string, windowId: number | null) => {

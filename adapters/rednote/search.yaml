@@ -1,9 +1,9 @@
 # Adapter logic derived from OpenCLI (https://github.com/jackwener/opencli)
 # Original author: jackwener | License: Apache-2.0
-site: xiaohongshu
+site: rednote
 name: search
-description: "搜索小红书笔记"
-domain: www.xiaohongshu.com
+description: "搜索 REDnote 笔记"
+domain: www.rednote.com
 strategy: cookie
 browser: true
 siteSession: persistent
@@ -22,18 +22,32 @@ args:
 columns: [rank, title, author, likes, url]
 
 pipeline:
-  - navigate: https://www.xiaohongshu.com/search_result?keyword=${{ args.query | urlencode }}&source=web_search_result_notes
+  - navigate: https://www.rednote.com/search_result?keyword=${{ args.query | urlencode }}&source=web_search_result_notes
   - wait: 3
   - scroll:
       times: 2
   - evaluate: |
       (() => {
-        const loginWall = /登录后查看搜索结果/.test(document.body.innerText || '');
+        const hasVisibleLoginModal = () => {
+          const candidates = document.querySelectorAll(
+            '[class*="login-modal"], [class*="LoginModal"], [class*="login-container"], [class*="LoginContainer"], dialog[role="dialog"]'
+          );
+          for (const el of candidates) {
+            if (!(el instanceof HTMLElement)) continue;
+            const rect = el.getBoundingClientRect();
+            if (rect.width <= 0 || rect.height <= 0) continue;
+            const style = getComputedStyle(el);
+            if (style.display === 'none' || style.visibility === 'hidden') continue;
+            return true;
+          }
+          return false;
+        };
+        const loginWall = /登录后查看搜索结果|请登录/.test(document.body.innerText || '') || hasVisibleLoginModal();
 
         const normalizeUrl = (href) => {
           if (!href) return '';
           if (href.startsWith('http://') || href.startsWith('https://')) return href;
-          if (href.startsWith('/')) return 'https://www.xiaohongshu.com' + href;
+          if (href.startsWith('/')) return 'https://www.rednote.com' + href;
           return '';
         };
 
@@ -41,7 +55,7 @@ pipeline:
 
         // Note containers: legacy `section.note-item` first, fallback to any
         // `<section>` wrapping a search-result/explore link. Upstream #1506
-        // reports the class being dropped on some xhs renders.
+        // reports the class being dropped on some XHS/REDnote renders.
         const collectNoteCards = () => {
           const classMatches = document.querySelectorAll('section.note-item');
           if (classMatches.length > 0) return classMatches;
@@ -91,7 +105,7 @@ pipeline:
           });
         }
 
-        if (loginWall) throw new Error('Xiaohongshu search results are blocked behind a login wall');
+        if (loginWall) throw new Error('Rednote search results are blocked behind a login wall');
 
         return results;
       })()

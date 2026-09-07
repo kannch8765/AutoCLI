@@ -31,6 +31,7 @@ class MockWebSocket {
 
 function createChromeMock() {
   let nextTabId = 10;
+  const sessionStorage: Record<string, unknown> = {};
   const tabs: MockTab[] = [
     { id: 1, windowId: 1, url: 'https://automation.example', title: 'automation', active: true, status: 'complete' },
     { id: 2, windowId: 2, url: 'https://user.example', title: 'user', active: true, status: 'complete' },
@@ -86,13 +87,32 @@ function createChromeMock() {
     runtime: {
       onInstalled: { addListener: vi.fn() } as Listener<() => void>,
       onStartup: { addListener: vi.fn() } as Listener<() => void>,
+      onMessage: { addListener: vi.fn() } as Listener<(...args: any[]) => void>,
+      onConnect: { addListener: vi.fn() } as Listener<(...args: any[]) => void>,
+      getManifest: vi.fn(() => ({ version: '1.5.6' })),
+    },
+    action: {
+      onClicked: { addListener: vi.fn() } as Listener<(...args: any[]) => void>,
     },
     cookies: {
       getAll: vi.fn(async () => []),
     },
+    storage: {
+      session: {
+        get: vi.fn(async (key: string) => ({
+          [key]: sessionStorage[key],
+        })),
+        set: vi.fn(async (values: Record<string, unknown>) => {
+          Object.assign(sessionStorage, values);
+        }),
+        remove: vi.fn(async (key: string) => {
+          delete sessionStorage[key];
+        }),
+      },
+    },
   };
 
-  return { chrome, tabs, query, create, update };
+  return { chrome, tabs, query, create, update, sessionStorage };
 }
 
 describe('background tab isolation', () => {
@@ -150,4 +170,62 @@ describe('background tab isolation', () => {
       expect.objectContaining({ workspace: 'site:zhihu', windowId: 2 }),
     ]));
   });
+  it('does not idle-close persistent site workspaces', async () => {
+    vi.useFakeTimers();
+    const { chrome } = createChromeMock();
+    vi.stubGlobal('chrome', chrome);
+
+    const mod = await import('./background');
+    mod.__test__.setAutomationWindowId('site:xiaohongshu', 1);
+    mod.__test__.resetWindowIdleTimer('site:xiaohongshu');
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(chrome.windows.remove).not.toHaveBeenCalled();
+    expect(mod.__test__.getSession('site:xiaohongshu')?.idleDeadlineAt).toBe(Number.POSITIVE_INFINITY);
+    vi.useRealTimers();
+  });
+
+
+  it('restores a persistent site window after a service-worker restart', async () => {
+    const { chrome } = createChromeMock();
+    vi.stubGlobal('chrome', chrome);
+
+    const firstWorker = await import('./background');
+    const firstWindowId = await firstWorker.__test__.getAutomationWindow(
+      'site:xiaohongshu',
+      'https://www.xiaohongshu.com/search_result?keyword=coffee',
+    );
+    expect(firstWindowId).toBe(1);
+    expect(chrome.windows.create).toHaveBeenCalledTimes(1);
+
+    // Simulate MV3 worker eviction: module memory disappears, Chrome windows and
+    // chrome.storage.session survive.
+    vi.resetModules();
+    const secondWorker = await import('./background');
+    const restoredWindowId = await secondWorker.__test__.getAutomationWindow(
+      'site:xiaohongshu',
+      'https://www.xiaohongshu.com/search_result?keyword=dessert',
+    );
+
+    expect(restoredWindowId).toBe(firstWindowId);
+    expect(chrome.windows.create).toHaveBeenCalledTimes(1);
+    expect(secondWorker.__test__.getSession('site:xiaohongshu')?.idleDeadlineAt)
+      .toBe(Number.POSITIVE_INFINITY);
+  });
+
+  it('still idle-closes one-shot workspaces', async () => {
+    vi.useFakeTimers();
+    const { chrome } = createChromeMock();
+    vi.stubGlobal('chrome', chrome);
+
+    const mod = await import('./background');
+    mod.__test__.setAutomationWindowId('default', 1);
+    mod.__test__.resetWindowIdleTimer('default');
+
+    await vi.advanceTimersByTimeAsync(30_001);
+    expect(chrome.windows.remove).toHaveBeenCalledWith(1);
+    expect(mod.__test__.getSession('default')).toBeNull();
+    vi.useRealTimers();
+  });
+
 });
