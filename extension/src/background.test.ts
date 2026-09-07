@@ -31,6 +31,7 @@ class MockWebSocket {
 
 function createChromeMock() {
   let nextTabId = 10;
+  const sessionStorage: Record<string, unknown> = {};
   const tabs: MockTab[] = [
     { id: 1, windowId: 1, url: 'https://automation.example', title: 'automation', active: true, status: 'complete' },
     { id: 2, windowId: 2, url: 'https://user.example', title: 'user', active: true, status: 'complete' },
@@ -96,9 +97,22 @@ function createChromeMock() {
     cookies: {
       getAll: vi.fn(async () => []),
     },
+    storage: {
+      session: {
+        get: vi.fn(async (key: string) => ({
+          [key]: sessionStorage[key],
+        })),
+        set: vi.fn(async (values: Record<string, unknown>) => {
+          Object.assign(sessionStorage, values);
+        }),
+        remove: vi.fn(async (key: string) => {
+          delete sessionStorage[key];
+        }),
+      },
+    },
   };
 
-  return { chrome, tabs, query, create, update };
+  return { chrome, tabs, query, create, update, sessionStorage };
 }
 
 describe('background tab isolation', () => {
@@ -169,6 +183,34 @@ describe('background tab isolation', () => {
     expect(chrome.windows.remove).not.toHaveBeenCalled();
     expect(mod.__test__.getSession('site:xiaohongshu')?.idleDeadlineAt).toBe(Number.POSITIVE_INFINITY);
     vi.useRealTimers();
+  });
+
+
+  it('restores a persistent site window after a service-worker restart', async () => {
+    const { chrome } = createChromeMock();
+    vi.stubGlobal('chrome', chrome);
+
+    const firstWorker = await import('./background');
+    const firstWindowId = await firstWorker.__test__.getAutomationWindow(
+      'site:xiaohongshu',
+      'https://www.xiaohongshu.com/search_result?keyword=coffee',
+    );
+    expect(firstWindowId).toBe(1);
+    expect(chrome.windows.create).toHaveBeenCalledTimes(1);
+
+    // Simulate MV3 worker eviction: module memory disappears, Chrome windows and
+    // chrome.storage.session survive.
+    vi.resetModules();
+    const secondWorker = await import('./background');
+    const restoredWindowId = await secondWorker.__test__.getAutomationWindow(
+      'site:xiaohongshu',
+      'https://www.xiaohongshu.com/search_result?keyword=dessert',
+    );
+
+    expect(restoredWindowId).toBe(firstWindowId);
+    expect(chrome.windows.create).toHaveBeenCalledTimes(1);
+    expect(secondWorker.__test__.getSession('site:xiaohongshu')?.idleDeadlineAt)
+      .toBe(Number.POSITIVE_INFINITY);
   });
 
   it('still idle-closes one-shot workspaces', async () => {
