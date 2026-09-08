@@ -16,15 +16,22 @@ use crate::types::{DaemonCommand, ReadArticle};
 pub struct DaemonPage {
     client: Arc<DaemonClient>,
     session: String,
+    surface: String,
     site_session: SiteSession,
     tab_id: RwLock<Option<u64>>,
 }
 
 impl DaemonPage {
-    pub fn new(client: Arc<DaemonClient>, session: impl Into<String>, site_session: SiteSession) -> Self {
+    pub fn new(
+        client: Arc<DaemonClient>,
+        session: impl Into<String>,
+        surface: impl Into<String>,
+        site_session: SiteSession,
+    ) -> Self {
         Self {
             client,
             session: session.into(),
+            surface: surface.into(),
             site_session,
             tab_id: RwLock::new(None),
         }
@@ -38,7 +45,10 @@ impl DaemonPage {
         };
         let mut c = DaemonCommand::new(action)
             .with_session(self.session.clone())
-            .with_site_session(lifecycle);
+            .with_surface(self.surface.clone());
+        if self.surface == "adapter" {
+            c = c.with_site_session(lifecycle);
+        }
         if let Some(tid) = *self.tab_id.read().await {
             c = c.with_tab_id(tid);
         }

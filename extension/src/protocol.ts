@@ -20,10 +20,10 @@ export interface Command {
   code?: string;
   /** OpenCLI-compatible logical browser session name. */
   session?: string;
-  /** Adapter site-session lifecycle. Persistent sessions do not idle-expire. */
+  /** Runtime surface selecting OpenCLI's owned-container policy. */
+  surface?: 'browser' | 'adapter';
+  /** Adapter site-session lifecycle. Persistent adapter sessions do not idle-expire. */
   siteSession?: 'ephemeral' | 'persistent';
-  /** Legacy AutoCLI session field accepted for older binaries during migration. */
-  workspace?: string;
   /** URL to navigate to (navigate action) */
   url?: string;
   /** Sub-operation for tabs: list, new, close, select */

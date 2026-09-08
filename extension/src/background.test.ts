@@ -42,8 +42,11 @@ class MockWebSocket {
   close(): void { this.onclose?.(); }
 }
 
-const REGISTRY_KEY = 'autocli_target_lease_registry_v2';
-const alarmName = (session: string) => `autocli:lease-idle:${encodeURIComponent(session)}`;
+const REGISTRY_KEY = 'autocli_target_lease_registry_v3';
+const leaseKey = (session: string, surface: 'browser' | 'adapter' = 'adapter') =>
+  `${surface}\u0000${encodeURIComponent(session)}`;
+const alarmName = (session: string, surface: 'browser' | 'adapter' = 'adapter') =>
+  `autocli:lease-idle:${encodeURIComponent(leaseKey(session, surface))}`;
 
 function createChromeMock(opts: { initialUrl?: string } = {}) {
   let nextTabId = 10;
@@ -231,15 +234,31 @@ describe('OpenCLI lifecycle parity', () => {
     vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline test'); }));
   });
 
+  it('rejects legacy workspace-only commands explicitly instead of timing out', async () => {
+    const { chrome } = createChromeMock();
+    vi.stubGlobal('chrome', chrome);
+
+    const mod = await import('./background');
+    const result = await mod.__test__.handleCommand({
+      id: 'legacy-wire',
+      action: 'close-window',
+      workspace: 'default',
+    } as any);
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('Browser session is required');
+    expect(result.error).toContain('update the AutoCLI CLI and extension together');
+  });
+
   it('leases separate tabs for separate ephemeral sessions inside one shared automation container', async () => {
     const { chrome, tabs } = createChromeMock();
     vi.stubGlobal('chrome', chrome);
 
     const mod = await import('./background');
-    mod.__test__.setAutomationWindowId(1);
+    mod.__test__.setContainerWindowId('adapter', 1);
 
-    const first = await mod.__test__.createOwnedTabLease('site:rednote:run-1', 'https://www.rednote.com/explore');
-    const second = await mod.__test__.createOwnedTabLease('site:twitter:run-2', 'https://x.com/home');
+    const first = await mod.__test__.createOwnedTabLease(leaseKey('site:rednote:run-1'), 'https://www.rednote.com/explore');
+    const second = await mod.__test__.createOwnedTabLease(leaseKey('site:twitter:run-2'), 'https://x.com/home');
 
     expect(first.tabId).toBe(1);
     expect(second.tabId).not.toBe(first.tabId);
@@ -248,20 +267,56 @@ describe('OpenCLI lifecycle parity', () => {
     expect(chrome.windows.create).not.toHaveBeenCalled();
   });
 
+  it('keeps browser and adapter sessions in separate owned containers even when the session name matches', async () => {
+    const { chrome } = createChromeMock();
+    vi.stubGlobal('chrome', chrome);
+
+    const mod = await import('./background');
+    mod.__test__.setContainerWindowId('adapter', 1);
+    mod.__test__.setContainerWindowId('browser', 2);
+
+    const adapter = await mod.__test__.createOwnedTabLease(leaseKey('same', 'adapter'));
+    const browser = await mod.__test__.createOwnedTabLease(leaseKey('same', 'browser'));
+
+    expect(adapter.tabId).toBe(1);
+    expect(browser.tabId).not.toBe(adapter.tabId);
+    expect((await chrome.tabs.get(adapter.tabId)).windowId).toBe(1);
+    expect((await chrome.tabs.get(browser.tabId)).windowId).toBe(2);
+    expect(mod.__test__.getSession('same', 'adapter')?.surface).toBe('adapter');
+    expect(mod.__test__.getSession('same', 'browser')?.surface).toBe('browser');
+  });
+
+  it('uses OpenCLI browser defaults: persistent lifecycle with a 10 minute idle lease', async () => {
+    const { chrome } = createChromeMock();
+    vi.stubGlobal('chrome', chrome);
+
+    const mod = await import('./background');
+    mod.__test__.setContainerWindowId('browser', 2);
+    await mod.__test__.createOwnedTabLease(leaseKey('browser-run', 'browser'));
+
+    const lease = mod.__test__.getSession('browser-run', 'browser');
+    expect(lease?.lifecycle).toBe('persistent');
+    expect(lease?.idleDeadlineAt).toBeGreaterThan(Date.now() + 9 * 60_000);
+    expect(chrome.alarms.create).toHaveBeenCalledWith(
+      alarmName('browser-run', 'browser'),
+      expect.objectContaining({ when: expect.any(Number) }),
+    );
+  });
+
   it('releases the last lease by detaching its target and leaving a reusable about:blank placeholder', async () => {
     const { chrome, tabs } = createChromeMock({ initialUrl: 'https://www.rednote.com/' });
     vi.stubGlobal('chrome', chrome);
     const executor = await import('./cdp');
     const detach = vi.spyOn(executor, 'detach').mockResolvedValue(undefined);
     const mod = await import('./background');
-    mod.__test__.setAutomationWindowId(1);
-    mod.__test__.setSession('site:rednote:run-1', {
+    mod.__test__.setContainerWindowId('adapter', 1);
+    mod.__test__.setSession('site:rednote:run-1', 'adapter', {
       windowId: 1,
       preferredTabId: 1,
       lifecycle: 'ephemeral',
     });
 
-    await mod.__test__.releaseLease('site:rednote:run-1', 'test release');
+    await mod.__test__.releaseLease(leaseKey('site:rednote:run-1'), 'test release');
 
     expect(detach).toHaveBeenCalledWith(1);
     expect(chrome.tabs.update).toHaveBeenCalledWith(1, { url: 'about:blank', active: true });
@@ -276,13 +331,13 @@ describe('OpenCLI lifecycle parity', () => {
     const executor = await import('./cdp');
     vi.spyOn(executor, 'detach').mockResolvedValue(undefined);
     const mod = await import('./background');
-    mod.__test__.setAutomationWindowId(1);
+    mod.__test__.setContainerWindowId('adapter', 1);
 
-    const first = await mod.__test__.createOwnedTabLease('site:rednote:run-1');
-    const second = await mod.__test__.createOwnedTabLease('site:twitter:run-2');
+    const first = await mod.__test__.createOwnedTabLease(leaseKey('site:rednote:run-1'));
+    const second = await mod.__test__.createOwnedTabLease(leaseKey('site:twitter:run-2'));
     chrome.tabs.remove.mockClear();
 
-    await mod.__test__.releaseLease('site:rednote:run-1', 'test release');
+    await mod.__test__.releaseLease(leaseKey('site:rednote:run-1'), 'test release');
 
     expect(chrome.tabs.remove).toHaveBeenCalledWith(first.tabId);
     expect(chrome.tabs.update).not.toHaveBeenCalledWith(first.tabId, { url: 'about:blank', active: true });
@@ -294,13 +349,13 @@ describe('OpenCLI lifecycle parity', () => {
     const { chrome } = createChromeMock();
     vi.stubGlobal('chrome', chrome);
     const mod = await import('./background');
-    mod.__test__.setAutomationWindowId(1);
-    mod.__test__.setSession('site:rednote', {
+    mod.__test__.setContainerWindowId('adapter', 1);
+    mod.__test__.setSession('site:rednote', 'adapter', {
       windowId: 1,
       preferredTabId: 1,
       lifecycle: 'persistent',
     });
-    mod.__test__.resetWindowIdleTimer('site:rednote');
+    mod.__test__.resetWindowIdleTimer(leaseKey('site:rednote'));
 
     await vi.advanceTimersByTimeAsync(60_000);
 
@@ -314,11 +369,12 @@ describe('OpenCLI lifecycle parity', () => {
     const { chrome, sessionStorage } = createChromeMock({ initialUrl: 'https://www.rednote.com/' });
     const deadline = Date.now() + 30_000;
     sessionStorage[REGISTRY_KEY] = {
-      version: 2,
-      automationWindowId: 1,
+      version: 3,
+      ownedContainers: { interactive: { windowId: null }, automation: { windowId: 1 } },
       leases: {
-        'site:rednote:run-1': {
+        [leaseKey('site:rednote:run-1')]: {
           session: 'site:rednote:run-1',
+          surface: 'adapter',
           windowId: 1,
           preferredTabId: 1,
           lifecycle: 'ephemeral',
@@ -334,7 +390,7 @@ describe('OpenCLI lifecycle parity', () => {
       expect(mod.__test__.getSession('site:rednote:run-1')?.preferredTabId).toBe(1);
     });
 
-    expect(mod.__test__.getAutomationWindowId()).toBe(1);
+    expect(mod.__test__.getContainerWindowId('adapter')).toBe(1);
     expect(chrome.windows.create).not.toHaveBeenCalled();
   });
 
@@ -342,11 +398,12 @@ describe('OpenCLI lifecycle parity', () => {
     const { chrome, sessionStorage } = createChromeMock({ initialUrl: 'https://www.rednote.com/' });
     const now = Date.now();
     sessionStorage[REGISTRY_KEY] = {
-      version: 2,
-      automationWindowId: 1,
+      version: 3,
+      ownedContainers: { interactive: { windowId: null }, automation: { windowId: 1 } },
       leases: {
-        'site:rednote:run-1': {
+        [leaseKey('site:rednote:run-1')]: {
           session: 'site:rednote:run-1',
+          surface: 'adapter',
           windowId: 1,
           preferredTabId: 1,
           lifecycle: 'ephemeral',
@@ -371,11 +428,12 @@ describe('OpenCLI lifecycle parity', () => {
   it('recovers a lost in-memory REDnote lease before close-window, then detaches and releases it', async () => {
     const { chrome, sessionStorage, tabs } = createChromeMock({ initialUrl: 'https://www.rednote.com/' });
     sessionStorage[REGISTRY_KEY] = {
-      version: 2,
-      automationWindowId: 1,
+      version: 3,
+      ownedContainers: { interactive: { windowId: null }, automation: { windowId: 1 } },
       leases: {
-        'site:rednote:run-1': {
+        [leaseKey('site:rednote:run-1')]: {
           session: 'site:rednote:run-1',
+          surface: 'adapter',
           windowId: 1,
           preferredTabId: 1,
           lifecycle: 'ephemeral',
@@ -393,6 +451,7 @@ describe('OpenCLI lifecycle parity', () => {
       id: 'close-after-worker-restart',
       action: 'close-window',
       session: 'site:rednote:run-1',
+      surface: 'adapter',
       siteSession: 'ephemeral',
     });
 
@@ -405,11 +464,12 @@ describe('OpenCLI lifecycle parity', () => {
   it('does not wipe the persisted registry when an idle alarm wakes the worker before recovery finishes', async () => {
     const { chrome, sessionStorage, alarmsOnAlarm } = createChromeMock({ initialUrl: 'https://www.rednote.com/' });
     sessionStorage[REGISTRY_KEY] = {
-      version: 2,
-      automationWindowId: 1,
+      version: 3,
+      ownedContainers: { interactive: { windowId: null }, automation: { windowId: 1 } },
       leases: {
-        'site:rednote:run-1': {
+        [leaseKey('site:rednote:run-1')]: {
           session: 'site:rednote:run-1',
+          surface: 'adapter',
           windowId: 1,
           preferredTabId: 1,
           lifecycle: 'ephemeral',
@@ -433,7 +493,7 @@ describe('OpenCLI lifecycle parity', () => {
     const alarmDone = listener({ name: alarmName('site:rednote:run-1') });
 
     await flush();
-    expect((sessionStorage[REGISTRY_KEY] as any).leases['site:rednote:run-1']).toBeDefined();
+    expect((sessionStorage[REGISTRY_KEY] as any).leases[leaseKey('site:rednote:run-1')]).toBeDefined();
 
     gate.resolve();
     await alarmDone;

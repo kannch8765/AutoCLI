@@ -130,7 +130,7 @@ async fn execute_command_inner(
         // have a stable name; every ephemeral adapter run receives a unique one.
         let session = resolve_adapter_browser_session(&cmd.site, cmd.site_session);
         let page = bridge
-            .connect_with_session(&session, cmd.site_session)
+            .connect_adapter_session(&session, cmd.site_session)
             .await?;
 
         // Pre-navigate to domain if set, but ONLY if the pipeline doesn't

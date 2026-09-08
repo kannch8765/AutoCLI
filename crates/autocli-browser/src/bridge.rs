@@ -35,28 +35,29 @@ impl BrowserBridge {
     /// fixed `default` workspace lets stale MV3 state bleed across commands.
     pub async fn connect(&mut self) -> Result<Arc<dyn IPage>, CliError> {
         let session = format!("browser:{}", uuid::Uuid::new_v4());
-        Ok(self.connect_daemon_page_with_session(&session, SiteSession::Ephemeral).await?)
+        Ok(self.connect_daemon_page_with_session(&session, "browser", SiteSession::Ephemeral).await?)
     }
 
-    /// Connect using an explicit OpenCLI-style logical session and lifecycle.
-    pub async fn connect_with_session(
+    /// Connect an adapter run using OpenCLI's adapter surface and site-session lifecycle.
+    pub async fn connect_adapter_session(
         &mut self,
         session: &str,
         site_session: SiteSession,
     ) -> Result<Arc<dyn IPage>, CliError> {
-        Ok(self.connect_daemon_page_with_session(session, site_session).await?)
+        Ok(self.connect_daemon_page_with_session(session, "adapter", site_session).await?)
     }
 
     /// Connect and return a fresh ephemeral concrete `DaemonPage` so callers can
     /// use daemon-specific methods (e.g. `read_article`) not on the `IPage` trait.
     pub async fn connect_daemon_page(&mut self) -> Result<Arc<DaemonPage>, CliError> {
         let session = format!("browser:{}", uuid::Uuid::new_v4());
-        self.connect_daemon_page_with_session(&session, SiteSession::Ephemeral).await
+        self.connect_daemon_page_with_session(&session, "browser", SiteSession::Ephemeral).await
     }
 
     pub async fn connect_daemon_page_with_session(
         &mut self,
         session: &str,
+        surface: &str,
         site_session: SiteSession,
     ) -> Result<Arc<DaemonPage>, CliError> {
         let client = Arc::new(DaemonClient::new(self.port));
@@ -84,7 +85,7 @@ impl BrowserBridge {
 
         // Step 3: Wait up to 5s for extension to connect
         if self.poll_extension(&client, EXTENSION_INITIAL_WAIT, false).await {
-            return Ok(Arc::new(DaemonPage::new(client, session, site_session)));
+            return Ok(Arc::new(DaemonPage::new(client, session, surface, site_session)));
         }
 
         // Step 4: Extension not connected — try to wake up Chrome
@@ -94,7 +95,7 @@ impl BrowserBridge {
 
         // Step 5: Wait remaining 25s with progress
         if self.poll_extension(&client, EXTENSION_REMAINING_WAIT, true).await {
-            return Ok(Arc::new(DaemonPage::new(client, session, site_session)));
+            return Ok(Arc::new(DaemonPage::new(client, session, surface, site_session)));
         }
 
         warn!("Chrome extension is not connected to the daemon");

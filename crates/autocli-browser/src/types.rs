@@ -11,9 +11,8 @@ pub struct DaemonCommand {
     pub url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session: Option<String>,
-    /// Legacy AutoCLI field retained only for wire compatibility with older clients.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub workspace: Option<String>,
+    pub surface: Option<String>,
     #[serde(rename = "siteSession", skip_serializing_if = "Option::is_none")]
     pub site_session: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -30,7 +29,7 @@ impl DaemonCommand {
             code: None,
             url: None,
             session: None,
-            workspace: None,
+            surface: None,
             site_session: None,
             tab_id: None,
             format: None,
@@ -52,14 +51,13 @@ impl DaemonCommand {
         self
     }
 
-    pub fn with_site_session(mut self, site_session: impl Into<String>) -> Self {
-        self.site_session = Some(site_session.into());
+    pub fn with_surface(mut self, surface: impl Into<String>) -> Self {
+        self.surface = Some(surface.into());
         self
     }
 
-    /// Legacy builder for callers that still speak the pre-OpenCLI-parity wire format.
-    pub fn with_workspace(mut self, workspace: impl Into<String>) -> Self {
-        self.workspace = Some(workspace.into());
+    pub fn with_site_session(mut self, site_session: impl Into<String>) -> Self {
+        self.site_session = Some(site_session.into());
         self
     }
 
@@ -147,10 +145,12 @@ mod tests {
     fn daemon_command_serializes_opencli_session_fields() {
         let cmd = DaemonCommand::new("exec")
             .with_session("site:rednote:run-1")
+            .with_surface("adapter")
             .with_site_session("ephemeral");
         let value = serde_json::to_value(cmd).expect("serialize daemon command");
 
         assert_eq!(value.get("session").and_then(|v| v.as_str()), Some("site:rednote:run-1"));
+        assert_eq!(value.get("surface").and_then(|v| v.as_str()), Some("adapter"));
         assert_eq!(value.get("siteSession").and_then(|v| v.as_str()), Some("ephemeral"));
         assert!(value.get("workspace").is_none());
     }
