@@ -23,7 +23,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
 
       - name: Rust workspace tests except confirmed main baseline
         shell: pwsh
@@ -40,9 +40,14 @@ jobs:
         working-directory: extension
         run: npm ci
 
+      - name: Install pinned Vitest for smoke only
+        working-directory: extension
+        run: npm install --no-save --no-package-lock vitest@5.0.0
+
       - name: OpenCLI lifecycle extension tests
         working-directory: extension
-        run: npx --yes vitest@latest run src/background.test.ts
+        shell: pwsh
+        run: .\node_modules\.bin\vitest.cmd run src/background.test.ts
 
       - name: Build extension
         working-directory: extension
