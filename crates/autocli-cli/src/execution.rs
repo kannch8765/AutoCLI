@@ -155,7 +155,14 @@ async fn execute_command_inner(
         // Persistent site sessions intentionally retain the window/tab so sites
         // that keep auth in tab/session storage survive across CLI invocations.
         if !persistent_site_session {
-            let _ = page.close().await;
+            if let Err(err) = page.close().await {
+                tracing::warn!(
+                    site = %cmd.site,
+                    name = %cmd.name,
+                    error = %err,
+                    "Failed to release one-shot browser window after command"
+                );
+            }
         }
 
         result

@@ -228,4 +228,25 @@ describe('background tab isolation', () => {
     vi.useRealTimers();
   });
 
+  it('detaches automation tabs before closing a one-shot window', async () => {
+    const { chrome } = createChromeMock();
+    vi.stubGlobal('chrome', chrome);
+
+    const executor = await import('./cdp');
+    const detach = vi.spyOn(executor, 'detach').mockResolvedValue(undefined);
+    const mod = await import('./background');
+    mod.__test__.setAutomationWindowId('default', 1);
+
+    const result = await mod.__test__.handleCloseWindow(
+      { id: 'close-1', action: 'close-window', workspace: 'default' },
+      'default',
+    );
+
+    expect(result.ok).toBe(true);
+    expect(detach).toHaveBeenCalledWith(1);
+    expect(detach).toHaveBeenCalledWith(3);
+    expect(chrome.windows.remove).toHaveBeenCalledWith(1);
+    expect(mod.__test__.getSession('default')).toBeNull();
+  });
+
 });

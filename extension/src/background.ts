@@ -791,10 +791,30 @@ async function handleCdp(cmd: Command, workspace: string): Promise<Result> {
 async function handleCloseWindow(cmd: Command, workspace: string): Promise<Result> {
   const session = automationSessions.get(workspace);
   if (session) {
+    // Match upstream OpenCLI's lease-release ordering: explicitly detach any
+    // debugger targets before destroying the one-shot automation window instead
+    // of relying on Chrome window teardown to clean debugger state as a side effect.
+    try {
+      const tabs = await chrome.tabs.query({ windowId: session.windowId });
+      for (const tab of tabs) {
+        if (tab.id === undefined) continue;
+        try {
+          await executor.detach(tab.id);
+          console.log(`[autocli] Detached tab ${tab.id} before closing automation window (${workspace})`);
+        } catch (err) {
+          console.warn(`[autocli] Failed to detach tab ${tab.id} before closing automation window (${workspace}): ${err}`);
+        }
+      }
+    } catch (err) {
+      console.warn(`[autocli] Failed to enumerate automation tabs before close (${workspace}): ${err}`);
+    }
+
     try {
       await chrome.windows.remove(session.windowId);
-    } catch {
-      // Window may already be closed
+    } catch (err) {
+      // Window may already be closed. Keep failures visible during the diagnostic
+      // build so a successful adapter result cannot hide cleanup failure.
+      console.warn(`[autocli] Failed to close automation window ${session.windowId} (${workspace}): ${err}`);
     }
     if (session.idleTimer) clearTimeout(session.idleTimer);
     automationSessions.delete(workspace);
@@ -916,6 +936,7 @@ async function handleSessions(cmd: Command): Promise<Result> {
 
 export const __test__ = {
   handleNavigate,
+  handleCloseWindow,
   isTargetUrl,
   handleTabs,
   handleSessions,

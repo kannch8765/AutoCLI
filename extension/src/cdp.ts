@@ -253,8 +253,11 @@ export function registerListeners(): void {
   chrome.tabs.onRemoved.addListener((tabId) => {
     attached.delete(tabId);
   });
-  chrome.debugger.onDetach.addListener((source) => {
-    if (source.tabId) attached.delete(source.tabId);
+  chrome.debugger.onDetach.addListener((source, reason) => {
+    if (source.tabId) {
+      console.warn(`[autocli] debugger detached: tabId=${source.tabId} reason=${reason}`);
+      attached.delete(source.tabId);
+    }
   });
   // Invalidate attached cache when tab URL changes to non-debuggable
   chrome.tabs.onUpdated.addListener(async (tabId, info) => {
