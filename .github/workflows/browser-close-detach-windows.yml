@@ -1,0 +1,55 @@
+name: Build Browser Close Detach Windows Package
+
+on:
+  push:
+    branches:
+      - build/browser-close-detach-windows-c3bb88c
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Build AutoCLI
+        run: cargo build --release --target x86_64-pc-windows-msvc
+
+      - name: Build Chrome extension
+        shell: pwsh
+        run: |
+          Set-Location extension
+          npm ci
+          npm run build
+          Set-Location ..
+
+      - name: Package smoke bundle
+        shell: pwsh
+        run: |
+          $commit = (git rev-parse HEAD).Trim()
+          Set-Content -Path BUILD-COMMIT.txt -Value $commit
+          New-Item -ItemType Directory -Force -Path smoke/extension | Out-Null
+          Copy-Item target/x86_64-pc-windows-msvc/release/autocli.exe smoke/autocli.exe
+          Copy-Item BUILD-COMMIT.txt smoke/BUILD-COMMIT.txt
+          Copy-Item extension/dist smoke/extension/dist -Recurse
+          Copy-Item extension/icons smoke/extension/icons -Recurse
+          Copy-Item extension/selector smoke/extension/selector -Recurse
+          Copy-Item extension/reader smoke/extension/reader -Recurse
+          Copy-Item extension/manifest.json smoke/extension/manifest.json
+          Compress-Archive -Path smoke/* -DestinationPath autocli-browser-close-detach-windows.zip
+          Get-FileHash autocli-browser-close-detach-windows.zip -Algorithm SHA256 | Format-List
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: autocli-browser-close-detach-windows
+          path: autocli-browser-close-detach-windows.zip
+          if-no-files-found: error
