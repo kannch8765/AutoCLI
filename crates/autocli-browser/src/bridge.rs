@@ -1,4 +1,4 @@
-use autocli_core::{CliError, IPage};
+use autocli_core::{CliError, IPage, SiteSession};
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, info, warn};
