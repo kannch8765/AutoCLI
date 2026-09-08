@@ -26,6 +26,15 @@ pub enum CliError {
         source: Option<Box<dyn std::error::Error + Send + Sync>>,
     },
 
+    /// Browser command failure carrying OpenCLI's machine-readable extension
+    /// error code. This is the Rust equivalent of BrowserCommandError.
+    #[error("[command] {message}")]
+    BrowserCommand {
+        message: String,
+        error_code: Option<String>,
+        suggestions: Vec<String>,
+    },
+
     #[error("[config] {message}")]
     Config {
         message: String,
@@ -97,7 +106,7 @@ impl CliError {
         match self {
             Self::BrowserConnect { .. } => "BROWSER_CONNECT",
             Self::AdapterLoad { .. } => "ADAPTER_LOAD",
-            Self::CommandExecution { .. } => "COMMAND_EXECUTION",
+            Self::CommandExecution { .. } | Self::BrowserCommand { .. } => "COMMAND_EXECUTION",
             Self::Config { .. } => "CONFIG",
             Self::AuthRequired { .. } => "AUTH_REQUIRED",
             Self::Timeout { .. } => "TIMEOUT",
@@ -116,7 +125,7 @@ impl CliError {
         match self {
             Self::BrowserConnect { .. } => "🌐",
             Self::AdapterLoad { .. } => "🔌",
-            Self::CommandExecution { .. } => "⚡",
+            Self::CommandExecution { .. } | Self::BrowserCommand { .. } => "⚡",
             Self::Config { .. } => "⚙️",
             Self::AuthRequired { .. } => "🔒",
             Self::Timeout { .. } => "⏱️",
@@ -136,6 +145,7 @@ impl CliError {
             Self::BrowserConnect { suggestions, .. }
             | Self::AdapterLoad { suggestions, .. }
             | Self::CommandExecution { suggestions, .. }
+            | Self::BrowserCommand { suggestions, .. }
             | Self::Config { suggestions, .. }
             | Self::AuthRequired { suggestions, .. }
             | Self::Timeout { suggestions, .. }
@@ -145,6 +155,27 @@ impl CliError {
             | Self::Pipeline { suggestions, .. }
             | Self::Http { suggestions, .. } => suggestions,
             Self::Io(_) | Self::Json(_) | Self::Yaml(_) => &[],
+        }
+    }
+
+    /// OpenCLI extension error code when this came from the browser command
+    /// envelope (attach_failed, tab_gone, target_navigated, ...).
+    pub fn browser_error_code(&self) -> Option<&str> {
+        match self {
+            Self::BrowserCommand { error_code, .. } => error_code.as_deref(),
+            _ => None,
+        }
+    }
+
+    pub fn browser_command(
+        msg: impl Into<String>,
+        error_code: Option<String>,
+        hint: Option<String>,
+    ) -> Self {
+        Self::BrowserCommand {
+            message: msg.into(),
+            error_code,
+            suggestions: hint.into_iter().collect(),
         }
     }
 

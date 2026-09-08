@@ -7,6 +7,36 @@ use tracing::warn;
 use crate::step_registry::StepRegistry;
 
 const MAX_BROWSER_ATTEMPTS: usize = 3;
+const BROWSER_RETRY_DELAY_MS: u64 = 1_000;
+
+/// Rust port of current OpenCLI's browser error classifier. Machine-readable
+/// extension codes are authoritative; message matching is only compatibility
+/// for older extensions that predate errorCode.
+fn is_transient_browser_error(err: &CliError) -> bool {
+    match err.browser_error_code() {
+        Some("attach_failed" | "tab_gone" | "target_navigated") => return true,
+        Some("detached_mid_command" | "cdp_timeout") => return false,
+        Some(_) => return false,
+        None => {}
+    }
+
+    let message = err.to_string();
+    [
+        "Extension disconnected",
+        "Extension not connected",
+        "attach failed",
+        "Detached while handling command",
+        "Debugger is not attached to the tab",
+        "no longer exists",
+        "No tab with id",
+        "CDP connection",
+        "Daemon command failed",
+        "No window with id",
+        "Inspected target navigated or closed",
+    ]
+    .iter()
+    .any(|pattern| message.contains(pattern))
+}
 
 /// Execute a pipeline — a sequence of steps.
 ///
@@ -55,13 +85,20 @@ pub async fn execute_pipeline(
                     break;
                 }
                 Err(e) => {
-                    if is_browser && attempt + 1 < MAX_BROWSER_ATTEMPTS {
+                    if is_browser
+                        && attempt + 1 < MAX_BROWSER_ATTEMPTS
+                        && is_transient_browser_error(&e)
+                    {
                         warn!(
                             step = step_name,
                             attempt = attempt + 1,
-                            "Browser step failed, retrying: {e}"
+                            "Transient browser step failed, retrying: {e}"
                         );
                         last_error = Some(e);
+                        tokio::time::sleep(std::time::Duration::from_millis(
+                            BROWSER_RETRY_DELAY_MS,
+                        ))
+                        .await;
                     } else {
                         return Err(e);
                     }
@@ -165,10 +202,44 @@ mod tests {
         ) -> Result<Value, CliError> {
             let count = self.fail_count.fetch_add(1, Ordering::SeqCst);
             if count < self.fail_times {
-                Err(CliError::pipeline("transient browser error"))
+                Err(CliError::browser_command(
+                    "transient browser error",
+                    Some("attach_failed".to_string()),
+                    None,
+                ))
             } else {
                 Ok(params.clone())
             }
+        }
+    }
+
+    struct NonRetryableBrowserStep {
+        attempts: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl StepHandler for NonRetryableBrowserStep {
+        fn name(&self) -> &'static str {
+            "non_retryable_browser"
+        }
+
+        fn is_browser_step(&self) -> bool {
+            true
+        }
+
+        async fn execute(
+            &self,
+            _page: Option<Arc<dyn IPage>>,
+            _params: &Value,
+            _data: &Value,
+            _args: &HashMap<String, Value>,
+        ) -> Result<Value, CliError> {
+            self.attempts.fetch_add(1, Ordering::SeqCst);
+            Err(CliError::browser_command(
+                "command outcome is unknown",
+                Some("cdp_timeout".to_string()),
+                None,
+            ))
         }
     }
 
@@ -249,4 +320,21 @@ mod tests {
             .unwrap_err();
         assert!(err.to_string().contains("transient browser error"));
     }
+    #[tokio::test]
+    async fn browser_step_does_not_retry_unknown_outcome_errors() {
+        let mut registry = StepRegistry::new();
+        let step = Arc::new(NonRetryableBrowserStep {
+            attempts: AtomicUsize::new(0),
+        });
+        registry.register(step.clone());
+
+        let pipeline = vec![json!({"non_retryable_browser": null})];
+        let err = execute_pipeline(None, &pipeline, &empty_args(), &registry)
+            .await
+            .unwrap_err();
+
+        assert_eq!(err.browser_error_code(), Some("cdp_timeout"));
+        assert_eq!(step.attempts.load(Ordering::SeqCst), 1);
+    }
+
 }

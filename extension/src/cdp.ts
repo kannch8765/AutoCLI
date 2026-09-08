@@ -10,6 +10,39 @@
 
 const attached = new Set<number>();
 
+/**
+ * OpenCLI parity: chrome.debugger.sendCommand has no deadline of its own.
+ * Keep the probe short so a stale attach cannot wedge the service worker, and
+ * bound normal commands below the daemon/client deadline.
+ */
+const CDP_COMMAND_TIMEOUT_MS = 60_000;
+const CDP_PROBE_TIMEOUT_MS = 2_000;
+
+export async function sendDebuggerCommand<T = unknown>(
+  target: chrome.debugger.Debuggee,
+  method: string,
+  params?: Record<string, unknown>,
+  timeoutMs: number = CDP_COMMAND_TIMEOUT_MS,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const commandPromise = (params === undefined
+    ? chrome.debugger.sendCommand(target, method)
+    : chrome.debugger.sendCommand(target, method, params)) as Promise<T>;
+  commandPromise.catch(() => {});
+  try {
+    return await Promise.race([
+      commandPromise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(
+          `CDP command ${method} timed out after ${Math.round(timeoutMs / 1000)}s — the page may be blocked by a native dialog (alert/confirm/print)`,
+        )), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 /** Check if a URL can be attached via CDP — only allow http(s) and blank pages. */
 function isDebuggableUrl(url?: string): boolean {
   if (!url) return true;  // empty/undefined = tab still loading, allow it
@@ -35,9 +68,9 @@ export async function ensureAttached(tabId: number, aggressiveRetry: boolean = f
   if (attached.has(tabId)) {
     // Verify the debugger is still actually attached by sending a harmless command
     try {
-      await chrome.debugger.sendCommand({ tabId }, 'Runtime.evaluate', {
+      await sendDebuggerCommand({ tabId }, 'Runtime.evaluate', {
         expression: '1', returnByValue: true,
-      });
+      }, CDP_PROBE_TIMEOUT_MS);
       return; // Still attached and working
     } catch {
       // Stale cache entry — need to re-attach
@@ -73,8 +106,10 @@ export async function ensureAttached(tabId: number, aggressiveRetry: boolean = f
             break; // Don't retry if URL became un-debuggable
           }
         } catch {
+          // Match current OpenCLI: a disappearing tab is a semantic transient.
+          // Keep the local attach loop alive; the client can re-resolve a fresh
+          // lease/tab on the next logical attempt if it remains gone.
           lastError = `Tab ${tabId} no longer exists`;
-          break;
         }
       }
     }
@@ -99,54 +134,48 @@ export async function ensureAttached(tabId: number, aggressiveRetry: boolean = f
   attached.add(tabId);
 
   try {
-    await chrome.debugger.sendCommand({ tabId }, 'Runtime.enable');
+    await sendDebuggerCommand({ tabId }, 'Runtime.enable');
   } catch {
     // Some pages may not need explicit enable
   }
 }
 
-export async function evaluate(tabId: number, expression: string, aggressiveRetry: boolean = false): Promise<unknown> {
-  // Retry the entire evaluate (attach + command).
-  // Normal: 2 retries. Operate: 3 retries (tolerates extension interference).
-  const MAX_EVAL_RETRIES = aggressiveRetry ? 3 : 2;
-  for (let attempt = 1; attempt <= MAX_EVAL_RETRIES; attempt++) {
-    try {
-      await ensureAttached(tabId, aggressiveRetry);
+export async function evaluate(
+  tabId: number,
+  expression: string,
+  aggressiveRetry: boolean = false,
+  timeoutMs: number = CDP_COMMAND_TIMEOUT_MS,
+): Promise<unknown> {
+  // Current OpenCLI deliberately has no inner evaluate retry loop. Attach/tab
+  // failures are classified by background.ts and retried as a NEW logical
+  // command by the client; mid-command failures must not be blindly replayed.
+  try {
+    await ensureAttached(tabId, aggressiveRetry);
 
-      const result = await chrome.debugger.sendCommand({ tabId }, 'Runtime.evaluate', {
-        expression,
-        returnByValue: true,
-        awaitPromise: true,
-      }) as {
-        result?: { type: string; value?: unknown; description?: string; subtype?: string };
-        exceptionDetails?: { exception?: { description?: string }; text?: string };
-      };
+    const result = await sendDebuggerCommand({ tabId }, 'Runtime.evaluate', {
+      expression,
+      returnByValue: true,
+      awaitPromise: true,
+    }, timeoutMs) as {
+      result?: { type: string; value?: unknown; description?: string; subtype?: string };
+      exceptionDetails?: { exception?: { description?: string }; text?: string };
+    };
 
-      if (result.exceptionDetails) {
-        const errMsg = result.exceptionDetails.exception?.description
-          || result.exceptionDetails.text
-          || 'Eval error';
-        throw new Error(errMsg);
-      }
-
-      return result.result?.value;
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      // Only retry on attach/debugger errors, not on JS eval errors
-      const isNavigateError = msg.includes('Inspected target navigated') || msg.includes('Target closed');
-      const isAttachError = isNavigateError || msg.includes('attach failed') || msg.includes('Debugger is not attached')
-        || msg.includes('chrome-extension://');
-      if (isAttachError && attempt < MAX_EVAL_RETRIES) {
-        attached.delete(tabId); // Force re-attach on next attempt
-        // SPA navigations recover quickly; debugger detach needs longer
-        const retryMs = isNavigateError ? 200 : 500;
-        await new Promise(resolve => setTimeout(resolve, retryMs));
-        continue;
-      }
-      throw e;
+    if (result.exceptionDetails) {
+      const errMsg = result.exceptionDetails.exception?.description
+        || result.exceptionDetails.text
+        || 'Eval error';
+      throw new Error(errMsg);
     }
+
+    return result.result?.value;
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (msg.includes('Detached') || msg.includes('Debugger is not attached') || msg.includes('Target closed')) {
+      attached.delete(tabId);
+    }
+    throw e;
   }
-  throw new Error('evaluate: max retries exhausted');
 }
 
 export const evaluateAsync = evaluate;

@@ -498,4 +498,35 @@ describe('OpenCLI lifecycle parity', () => {
     gate.resolve();
     await alarmDone;
   });
+
+  it('tags debugger detach-before-exec as attach_failed for OpenCLI semantic retry', async () => {
+    const { chrome } = createChromeMock({ initialUrl: 'https://www.rednote.com/' });
+    vi.stubGlobal('chrome', chrome);
+    const executor = await import('./cdp');
+    vi.spyOn(executor, 'evaluateAsync').mockRejectedValueOnce(
+      new Error('Debugger is not attached to the tab with id: 1.'),
+    );
+    const mod = await import('./background');
+    mod.__test__.setContainerWindowId('adapter', 1);
+    mod.__test__.setSession('site:rednote:run-attach', 'adapter', {
+      windowId: 1,
+      preferredTabId: 1,
+      lifecycle: 'ephemeral',
+    });
+
+    const result = await mod.__test__.handleCommand({
+      id: 'exec-after-cross-lane-detach',
+      action: 'exec',
+      code: '1',
+      session: 'site:rednote:run-attach',
+      surface: 'adapter',
+      siteSession: 'ephemeral',
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      errorCode: 'attach_failed',
+    });
+  });
+
 });
