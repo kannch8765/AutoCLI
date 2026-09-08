@@ -2,6 +2,8 @@
 
 > 用 Rust 完整复刻 OpenCLI（TypeScript）的所有功能，除 Chrome 扩展外全部用 Rust 实现。
 
+> Browser session/lease lifecycle and debugger-recovery parity are documented separately in [`opencli-browser-lifecycle-parity.md`](./opencli-browser-lifecycle-parity.md). For this fork, current OpenCLI behavior is the reference; do not invent lifecycle behavior that OpenCLI does not implement.
+
 ---
 
 ## 1. 项目概述
