@@ -47,7 +47,7 @@ jobs:
       - name: OpenCLI lifecycle extension tests
         working-directory: extension
         shell: pwsh
-        run: .\node_modules\.bin\vitest.cmd run src/background.test.ts
+        run: .\node_modules\.bin\vitest.cmd run src/background.test.ts src/cdp.test.ts
 
       - name: Build extension
         working-directory: extension
