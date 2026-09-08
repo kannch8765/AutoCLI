@@ -1,0 +1,67 @@
+name: Build OpenCLI Lifecycle Windows Smoke
+
+on:
+  push:
+    branches:
+      - build/opencli-lifecycle-windows-8bcd152
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  windows-smoke:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Rust workspace tests
+        run: cargo test --workspace
+
+      - name: Build AutoCLI release binary
+        run: cargo build --release
+
+      - name: Install extension dependencies
+        working-directory: extension
+        run: npm ci
+
+      - name: OpenCLI lifecycle extension tests
+        working-directory: extension
+        run: npx --yes vitest@latest run src/background.test.ts
+
+      - name: Build extension
+        working-directory: extension
+        run: npm run build
+
+      - name: Package smoke bundle
+        shell: pwsh
+        run: |
+          $root = Join-Path $PWD 'smoke-package'
+          $ext = Join-Path $root 'extension'
+          New-Item -ItemType Directory -Force -Path $ext | Out-Null
+          Copy-Item 'target\release\autocli.exe' (Join-Path $root 'autocli.exe')
+          Copy-Item 'extension\dist' $ext -Recurse
+          Copy-Item 'extension\icons' $ext -Recurse
+          Copy-Item 'extension\selector' $ext -Recurse
+          Copy-Item 'extension\reader' $ext -Recurse
+          Copy-Item 'extension\manifest.json' $ext
+          Set-Content -LiteralPath (Join-Path $root 'BUILD-COMMIT.txt') -Value '${{ github.sha }}' -NoNewline
+          Compress-Archive -Path "$root\*" -DestinationPath 'autocli-opencli-lifecycle-windows.zip'
+          Get-FileHash 'target\release\autocli.exe' -Algorithm SHA256
+          Get-FileHash 'autocli-opencli-lifecycle-windows.zip' -Algorithm SHA256
+
+      - name: Upload smoke bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: autocli-opencli-lifecycle-windows
+          path: autocli-opencli-lifecycle-windows.zip
