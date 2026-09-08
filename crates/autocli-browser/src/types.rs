@@ -115,6 +115,10 @@ pub struct DaemonResult {
     pub data: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    #[serde(rename = "errorCode", skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
+    #[serde(rename = "errorHint", skip_serializing_if = "Option::is_none")]
+    pub error_hint: Option<String>,
 }
 
 impl DaemonResult {
@@ -124,6 +128,8 @@ impl DaemonResult {
             ok: true,
             data: Some(data),
             error: None,
+            error_code: None,
+            error_hint: None,
         }
     }
 
@@ -133,13 +139,15 @@ impl DaemonResult {
             ok: false,
             data: None,
             error: Some(error),
+            error_code: None,
+            error_hint: None,
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::DaemonCommand;
+    use super::{DaemonCommand, DaemonResult};
 
     #[test]
     fn daemon_command_serializes_opencli_session_fields() {
@@ -154,4 +162,19 @@ mod tests {
         assert_eq!(value.get("siteSession").and_then(|v| v.as_str()), Some("ephemeral"));
         assert!(value.get("workspace").is_none());
     }
+    #[test]
+    fn daemon_result_deserializes_opencli_error_fields() {
+        let result: DaemonResult = serde_json::from_value(serde_json::json!({
+            "id": "cmd-1",
+            "ok": false,
+            "error": "Debugger is not attached to the tab",
+            "errorCode": "attach_failed",
+            "errorHint": "retry after the extension settles"
+        }))
+        .expect("deserialize daemon result");
+
+        assert_eq!(result.error_code.as_deref(), Some("attach_failed"));
+        assert_eq!(result.error_hint.as_deref(), Some("retry after the extension settles"));
+    }
+
 }

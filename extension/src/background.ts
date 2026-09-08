@@ -765,11 +765,7 @@ async function handleCommand(cmd: Command): Promise<Result> {
         return { id: cmd.id, ok: false, error: `Unknown action: ${cmd.action}` };
     }
   } catch (err) {
-    return {
-      id: cmd.id,
-      ok: false,
-      error: err instanceof Error ? err.message : String(err),
-    };
+    return errorResult(cmd.id, err);
   } finally {
     const remaining = (activeCommandCounts.get(leaseKey) ?? 1) - 1;
     if (remaining <= 0) activeCommandCounts.delete(leaseKey);
@@ -874,15 +870,36 @@ async function listAutomationWebTabs(leaseKey: string): Promise<chrome.tabs.Tab[
   return tabs.filter((tab) => isDebuggableUrl(tab.url));
 }
 
+/**
+ * Current OpenCLI classifies debugger failures at the extension boundary so
+ * the client can distinguish safe semantic retries from unknown outcomes.
+ */
+function classifyExtensionError(message: string): string | undefined {
+  if (/Inspected target navigated|Target closed/.test(message)) return 'target_navigated';
+  if (/Detached while handling command/.test(message)) return 'detached_mid_command';
+  if (/CDP command .* timed out/.test(message)) return 'cdp_timeout';
+  if (/attach failed|Debugger is not attached/.test(message)) return 'attach_failed';
+  if (/No tab with id|no longer exists|No window with id/.test(message)) return 'tab_gone';
+  return undefined;
+}
+
+function errorResult(id: string, err: unknown): Result {
+  const message = err instanceof Error ? err.message : String(err);
+  const errorCode = classifyExtensionError(message);
+  return { id, ok: false, error: message, ...(errorCode ? { errorCode } : {}) };
+}
+
 async function handleExec(cmd: Command, leaseKey: string): Promise<Result> {
   if (!cmd.code) return { id: cmd.id, ok: false, error: 'Missing code' };
   const tabId = await resolveTabId(cmd.tabId, leaseKey);
   try {
-    const aggressive = getSessionFromKey(leaseKey).startsWith('operate:');
+    // Current OpenCLI reserves aggressive attach retry for the interactive
+    // browser surface; adapters use the normal attach policy.
+    const aggressive = getSurfaceFromKey(leaseKey) === 'browser';
     const data = await executor.evaluateAsync(tabId, cmd.code, aggressive);
     return { id: cmd.id, ok: true, data };
   } catch (err) {
-    return { id: cmd.id, ok: false, error: err instanceof Error ? err.message : String(err) };
+    return errorResult(cmd.id, err);
   }
 }
 

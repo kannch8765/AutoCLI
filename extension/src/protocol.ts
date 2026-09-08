@@ -57,6 +57,10 @@ export interface Result {
   data?: unknown;
   /** Error message on failure */
   error?: string;
+  /** Stable machine-readable error code on failure (OpenCLI transport contract). */
+  errorCode?: string;
+  /** Optional recovery hint paired with errorCode. */
+  errorHint?: string;
 }
 
 /** Default daemon port */
