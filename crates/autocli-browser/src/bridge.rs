@@ -29,24 +29,36 @@ impl BrowserBridge {
         Self::new(DEFAULT_PORT)
     }
 
-    /// Connect to the daemon, starting it if necessary, and return a trait-object page.
+    /// Connect to a fresh ephemeral browser session.
+    ///
+    /// OpenCLI gives every ephemeral run its own logical session; sharing a
+    /// fixed `default` workspace lets stale MV3 state bleed across commands.
     pub async fn connect(&mut self) -> Result<Arc<dyn IPage>, CliError> {
-        Ok(self.connect_daemon_page_with_workspace("default").await?)
+        let session = format!("browser:{}", uuid::Uuid::new_v4());
+        Ok(self.connect_daemon_page_with_session(&session, SiteSession::Ephemeral).await?)
     }
 
-    /// Connect using a named automation workspace. Stable site workspaces allow
-    /// interactive adapters to retain tab-local auth/session state across CLI runs.
-    pub async fn connect_with_workspace(&mut self, workspace: &str) -> Result<Arc<dyn IPage>, CliError> {
-        Ok(self.connect_daemon_page_with_workspace(workspace).await?)
+    /// Connect using an explicit OpenCLI-style logical session and lifecycle.
+    pub async fn connect_with_session(
+        &mut self,
+        session: &str,
+        site_session: SiteSession,
+    ) -> Result<Arc<dyn IPage>, CliError> {
+        Ok(self.connect_daemon_page_with_session(session, site_session).await?)
     }
 
-    /// Connect and return the concrete `DaemonPage` so callers can use
-    /// daemon-specific methods (e.g. `read_article`) not on the `IPage` trait.
+    /// Connect and return a fresh ephemeral concrete `DaemonPage` so callers can
+    /// use daemon-specific methods (e.g. `read_article`) not on the `IPage` trait.
     pub async fn connect_daemon_page(&mut self) -> Result<Arc<DaemonPage>, CliError> {
-        self.connect_daemon_page_with_workspace("default").await
+        let session = format!("browser:{}", uuid::Uuid::new_v4());
+        self.connect_daemon_page_with_session(&session, SiteSession::Ephemeral).await
     }
 
-    pub async fn connect_daemon_page_with_workspace(&mut self, workspace: &str) -> Result<Arc<DaemonPage>, CliError> {
+    pub async fn connect_daemon_page_with_session(
+        &mut self,
+        session: &str,
+        site_session: SiteSession,
+    ) -> Result<Arc<DaemonPage>, CliError> {
         let client = Arc::new(DaemonClient::new(self.port));
 
         // Step 1: Check Chrome is running
@@ -72,7 +84,7 @@ impl BrowserBridge {
 
         // Step 3: Wait up to 5s for extension to connect
         if self.poll_extension(&client, EXTENSION_INITIAL_WAIT, false).await {
-            return Ok(Arc::new(DaemonPage::new(client, workspace)));
+            return Ok(Arc::new(DaemonPage::new(client, session, site_session)));
         }
 
         // Step 4: Extension not connected — try to wake up Chrome
@@ -82,7 +94,7 @@ impl BrowserBridge {
 
         // Step 5: Wait remaining 25s with progress
         if self.poll_extension(&client, EXTENSION_REMAINING_WAIT, true).await {
-            return Ok(Arc::new(DaemonPage::new(client, workspace)));
+            return Ok(Arc::new(DaemonPage::new(client, session, site_session)));
         }
 
         warn!("Chrome extension is not connected to the daemon");

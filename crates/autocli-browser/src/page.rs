@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use autocli_core::{
+    SiteSession,
     AutoScrollOptions, CliError, Cookie, CookieOptions, GotoOptions, IPage, InterceptedRequest,
     NetworkRequest, ScreenshotOptions, ScrollDirection, SnapshotOptions, TabInfo, WaitOptions,
 };
@@ -14,22 +15,30 @@ use crate::types::{DaemonCommand, ReadArticle};
 /// A page backed by the Daemon + Chrome Extension bridge.
 pub struct DaemonPage {
     client: Arc<DaemonClient>,
-    workspace: String,
+    session: String,
+    site_session: SiteSession,
     tab_id: RwLock<Option<u64>>,
 }
 
 impl DaemonPage {
-    pub fn new(client: Arc<DaemonClient>, workspace: impl Into<String>) -> Self {
+    pub fn new(client: Arc<DaemonClient>, session: impl Into<String>, site_session: SiteSession) -> Self {
         Self {
             client,
-            workspace: workspace.into(),
+            session: session.into(),
+            site_session,
             tab_id: RwLock::new(None),
         }
     }
 
-    /// Build a command with workspace and optional tab_id pre-filled.
+    /// Build a command with OpenCLI-compatible session lifecycle and optional tab_id pre-filled.
     async fn cmd(&self, action: &str) -> DaemonCommand {
-        let mut c = DaemonCommand::new(action).with_workspace(self.workspace.clone());
+        let lifecycle = match self.site_session {
+            SiteSession::Ephemeral => "ephemeral",
+            SiteSession::Persistent => "persistent",
+        };
+        let mut c = DaemonCommand::new(action)
+            .with_session(self.session.clone())
+            .with_site_session(lifecycle);
         if let Some(tid) = *self.tab_id.read().await {
             c = c.with_tab_id(tid);
         }

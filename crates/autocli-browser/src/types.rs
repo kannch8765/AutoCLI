@@ -10,7 +10,12 @@ pub struct DaemonCommand {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
+    /// Legacy AutoCLI field retained only for wire compatibility with older clients.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace: Option<String>,
+    #[serde(rename = "siteSession", skip_serializing_if = "Option::is_none")]
+    pub site_session: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tab_id: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -24,7 +29,9 @@ impl DaemonCommand {
             action: action.into(),
             code: None,
             url: None,
+            session: None,
             workspace: None,
+            site_session: None,
             tab_id: None,
             format: None,
         }
@@ -40,6 +47,17 @@ impl DaemonCommand {
         self
     }
 
+    pub fn with_session(mut self, session: impl Into<String>) -> Self {
+        self.session = Some(session.into());
+        self
+    }
+
+    pub fn with_site_session(mut self, site_session: impl Into<String>) -> Self {
+        self.site_session = Some(site_session.into());
+        self
+    }
+
+    /// Legacy builder for callers that still speak the pre-OpenCLI-parity wire format.
     pub fn with_workspace(mut self, workspace: impl Into<String>) -> Self {
         self.workspace = Some(workspace.into());
         self
@@ -118,5 +136,22 @@ impl DaemonResult {
             data: None,
             error: Some(error),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DaemonCommand;
+
+    #[test]
+    fn daemon_command_serializes_opencli_session_fields() {
+        let cmd = DaemonCommand::new("exec")
+            .with_session("site:rednote:run-1")
+            .with_site_session("ephemeral");
+        let value = serde_json::to_value(cmd).expect("serialize daemon command");
+
+        assert_eq!(value.get("session").and_then(|v| v.as_str()), Some("site:rednote:run-1"));
+        assert_eq!(value.get("siteSession").and_then(|v| v.as_str()), Some("ephemeral"));
+        assert!(value.get("workspace").is_none());
     }
 }

@@ -6,6 +6,14 @@ use std::sync::Arc;
 use std::collections::HashMap;
 
 /// Get daemon port from env or default
+
+fn resolve_adapter_browser_session(site: &str, site_session: SiteSession) -> String {
+    match site_session {
+        SiteSession::Persistent => format!("site:{site}"),
+        SiteSession::Ephemeral => format!("site:{site}:{}", uuid::Uuid::new_v4()),
+    }
+}
+
 fn daemon_port() -> u16 {
     std::env::var("AUTOCLI_DAEMON_PORT")
         .ok()
@@ -118,11 +126,12 @@ async fn execute_command_inner(
         // Browser session
         let mut bridge = BrowserBridge::new(daemon_port());
         let persistent_site_session = cmd.site_session == SiteSession::Persistent;
-        let page = if persistent_site_session {
-            bridge.connect_with_workspace(&format!("site:{}", cmd.site)).await?
-        } else {
-            bridge.connect().await?
-        };
+        // Mirror OpenCLI resolveAdapterBrowserSession(): persistent site sessions
+        // have a stable name; every ephemeral adapter run receives a unique one.
+        let session = resolve_adapter_browser_session(&cmd.site, cmd.site_session);
+        let page = bridge
+            .connect_with_session(&session, cmd.site_session)
+            .await?;
 
         // Pre-navigate to domain if set, but ONLY if the pipeline doesn't
         // start with its own navigate step (to avoid double navigation).
@@ -185,7 +194,8 @@ async fn run_command(
 
 #[cfg(test)]
 mod tests {
-    use super::validate_rednote_note_url;
+    use super::{resolve_adapter_browser_session, validate_rednote_note_url};
+    use autocli_core::SiteSession;
 
     #[test]
     fn accepts_rednote_explore_url_with_token() {
@@ -255,4 +265,25 @@ mod tests {
         )
         .is_err());
     }
+    #[test]
+    fn persistent_adapter_session_is_stable_and_site_scoped() {
+        assert_eq!(
+            resolve_adapter_browser_session("rednote", SiteSession::Persistent),
+            "site:rednote"
+        );
+        assert_eq!(
+            resolve_adapter_browser_session("rednote", SiteSession::Persistent),
+            "site:rednote"
+        );
+    }
+
+    #[test]
+    fn ephemeral_adapter_sessions_are_unique_and_site_scoped() {
+        let first = resolve_adapter_browser_session("rednote", SiteSession::Ephemeral);
+        let second = resolve_adapter_browser_session("rednote", SiteSession::Ephemeral);
+        assert!(first.starts_with("site:rednote:"));
+        assert!(second.starts_with("site:rednote:"));
+        assert_ne!(first, second);
+    }
+
 }

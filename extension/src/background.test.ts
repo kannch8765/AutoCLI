@@ -2,8 +2,6 @@
 // Licensed under Apache-2.0. Modified for AutoCLI.
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-type Listener<T extends (...args: any[]) => void> = { addListener: (fn: T) => void };
-
 type MockTab = {
   id: number;
   windowId: number;
@@ -13,6 +11,24 @@ type MockTab = {
   status?: string;
 };
 
+type ListenerStore<T extends (...args: any[]) => any> = {
+  addListener: ReturnType<typeof vi.fn>;
+  removeListener?: ReturnType<typeof vi.fn>;
+  listeners: T[];
+};
+
+function event<T extends (...args: any[]) => any>(): ListenerStore<T> {
+  const listeners: T[] = [];
+  return {
+    listeners,
+    addListener: vi.fn((fn: T) => { listeners.push(fn); }),
+    removeListener: vi.fn((fn: T) => {
+      const index = listeners.indexOf(fn);
+      if (index >= 0) listeners.splice(index, 1);
+    }),
+  };
+}
+
 class MockWebSocket {
   static OPEN = 1;
   static CONNECTING = 0;
@@ -21,31 +37,54 @@ class MockWebSocket {
   onmessage: ((event: { data: string }) => void) | null = null;
   onclose: (() => void) | null = null;
   onerror: (() => void) | null = null;
-
   constructor(_url: string) {}
   send(_data: string): void {}
-  close(): void {
-    this.onclose?.();
-  }
+  close(): void { this.onclose?.(); }
 }
 
-function createChromeMock() {
+const REGISTRY_KEY = 'autocli_target_lease_registry_v2';
+const alarmName = (session: string) => `autocli:lease-idle:${encodeURIComponent(session)}`;
+
+function createChromeMock(opts: { initialUrl?: string } = {}) {
   let nextTabId = 10;
+  let nextWindowId = 10;
   const sessionStorage: Record<string, unknown> = {};
+  const windows = new Set<number>([1, 2]);
   const tabs: MockTab[] = [
-    { id: 1, windowId: 1, url: 'https://automation.example', title: 'automation', active: true, status: 'complete' },
-    { id: 2, windowId: 2, url: 'https://user.example', title: 'user', active: true, status: 'complete' },
-    { id: 3, windowId: 1, url: 'chrome://extensions', title: 'chrome', active: false, status: 'complete' },
+    {
+      id: 1,
+      windowId: 1,
+      url: opts.initialUrl ?? 'about:blank',
+      title: 'automation',
+      active: true,
+      status: 'complete',
+    },
+    {
+      id: 2,
+      windowId: 2,
+      url: 'https://user.example',
+      title: 'user',
+      active: true,
+      status: 'complete',
+    },
   ];
 
-  const query = vi.fn(async (queryInfo: { windowId?: number } = {}) => {
-    return tabs.filter((tab) => queryInfo.windowId === undefined || tab.windowId === queryInfo.windowId);
-  });
-  const create = vi.fn(async ({ windowId, url, active }: { windowId?: number; url?: string; active?: boolean }) => {
+  const tabsOnUpdated = event<(id: number, info: chrome.tabs.TabChangeInfo, tab: chrome.tabs.Tab) => void>();
+  const tabsOnRemoved = event<(tabId: number) => void>();
+  const windowsOnRemoved = event<(windowId: number) => void>();
+  const alarmsOnAlarm = event<(alarm: { name: string }) => void>();
+  const debuggerOnDetach = event<(source: { tabId?: number }, reason?: string) => void>();
+
+  const query = vi.fn(async (queryInfo: { windowId?: number } = {}) =>
+    tabs.filter((tab) => queryInfo.windowId === undefined || tab.windowId === queryInfo.windowId));
+
+  const createTab = vi.fn(async ({ windowId, url, active }: { windowId?: number; url?: string; active?: boolean }) => {
+    const resolvedWindowId = windowId ?? 1;
+    windows.add(resolvedWindowId);
     const tab: MockTab = {
       id: nextTabId++,
-      windowId: windowId ?? 999,
-      url,
+      windowId: resolvedWindowId,
+      url: url ?? 'about:blank',
       title: url ?? 'blank',
       active: !!active,
       status: 'complete',
@@ -53,179 +92,350 @@ function createChromeMock() {
     tabs.push(tab);
     return tab;
   });
-  const update = vi.fn(async (tabId: number, updates: { active?: boolean; url?: string }) => {
+
+  const updateTab = vi.fn(async (tabId: number, updates: { active?: boolean; url?: string }) => {
     const tab = tabs.find((entry) => entry.id === tabId);
     if (!tab) throw new Error(`Unknown tab ${tabId}`);
     if (updates.active !== undefined) tab.active = updates.active;
-    if (updates.url !== undefined) tab.url = updates.url;
+    if (updates.url !== undefined) {
+      tab.url = updates.url;
+      tab.title = updates.url;
+    }
     return tab;
+  });
+
+  const removeTab = vi.fn(async (tabId: number) => {
+    const index = tabs.findIndex((entry) => entry.id === tabId);
+    if (index >= 0) tabs.splice(index, 1);
+  });
+
+  const createWindow = vi.fn(async ({ url, focused, width, height, type }: any) => {
+    const windowId = nextWindowId++;
+    windows.add(windowId);
+    const tab: MockTab = {
+      id: nextTabId++,
+      windowId,
+      url: url ?? 'about:blank',
+      title: url ?? 'blank',
+      active: true,
+      status: 'complete',
+    };
+    tabs.push(tab);
+    return { id: windowId, focused, width, height, type };
+  });
+
+  const removeWindow = vi.fn(async (windowId: number) => {
+    windows.delete(windowId);
+    for (let i = tabs.length - 1; i >= 0; i--) {
+      if (tabs[i].windowId === windowId) tabs.splice(i, 1);
+    }
   });
 
   const chrome = {
     tabs: {
       query,
-      create,
-      update,
-      remove: vi.fn(async (_tabId: number) => {}),
+      create: createTab,
+      update: updateTab,
+      remove: removeTab,
+      move: vi.fn(async (tabId: number, { windowId }: { windowId: number }) => {
+        const tab = tabs.find((entry) => entry.id === tabId);
+        if (!tab) throw new Error(`Unknown tab ${tabId}`);
+        tab.windowId = windowId;
+        return tab;
+      }),
       get: vi.fn(async (tabId: number) => {
         const tab = tabs.find((entry) => entry.id === tabId);
         if (!tab) throw new Error(`Unknown tab ${tabId}`);
         return tab;
       }),
-      onUpdated: { addListener: vi.fn(), removeListener: vi.fn() } as Listener<(id: number, info: chrome.tabs.TabChangeInfo) => void>,
+      onUpdated: tabsOnUpdated,
+      onRemoved: tabsOnRemoved,
     },
     windows: {
-      get: vi.fn(async (windowId: number) => ({ id: windowId })),
-      create: vi.fn(async ({ url, focused, width, height, type }: any) => ({ id: 1, url, focused, width, height, type })),
-      remove: vi.fn(async (_windowId: number) => {}),
-      onRemoved: { addListener: vi.fn() } as Listener<(windowId: number) => void>,
+      get: vi.fn(async (windowId: number) => {
+        if (!windows.has(windowId)) throw new Error(`Unknown window ${windowId}`);
+        return { id: windowId };
+      }),
+      create: createWindow,
+      remove: removeWindow,
+      onRemoved: windowsOnRemoved,
     },
     alarms: {
       create: vi.fn(),
-      onAlarm: { addListener: vi.fn() } as Listener<(alarm: { name: string }) => void>,
+      clear: vi.fn(),
+      onAlarm: alarmsOnAlarm,
+    },
+    debugger: {
+      attach: vi.fn(async () => {}),
+      detach: vi.fn(async () => {}),
+      sendCommand: vi.fn(async () => ({})),
+      onDetach: debuggerOnDetach,
     },
     runtime: {
-      onInstalled: { addListener: vi.fn() } as Listener<() => void>,
-      onStartup: { addListener: vi.fn() } as Listener<() => void>,
-      onMessage: { addListener: vi.fn() } as Listener<(...args: any[]) => void>,
-      onConnect: { addListener: vi.fn() } as Listener<(...args: any[]) => void>,
+      onInstalled: event<() => void>(),
+      onStartup: event<() => void>(),
+      onMessage: event<(...args: any[]) => void>(),
+      onConnect: event<(...args: any[]) => void>(),
       getManifest: vi.fn(() => ({ version: '1.5.7' })),
     },
     action: {
-      onClicked: { addListener: vi.fn() } as Listener<(...args: any[]) => void>,
+      onClicked: event<(...args: any[]) => void>(),
     },
     cookies: {
       getAll: vi.fn(async () => []),
     },
     storage: {
       session: {
-        get: vi.fn(async (key: string) => ({
-          [key]: sessionStorage[key],
-        })),
-        set: vi.fn(async (values: Record<string, unknown>) => {
-          Object.assign(sessionStorage, values);
-        }),
-        remove: vi.fn(async (key: string) => {
-          delete sessionStorage[key];
-        }),
+        get: vi.fn(async (key: string) => ({ [key]: sessionStorage[key] })),
+        set: vi.fn(async (values: Record<string, unknown>) => { Object.assign(sessionStorage, values); }),
+        remove: vi.fn(async (key: string) => { delete sessionStorage[key]; }),
       },
+    },
+    scripting: {
+      executeScript: vi.fn(async () => []),
     },
   };
 
-  return { chrome, tabs, query, create, update, sessionStorage };
+  return {
+    chrome,
+    tabs,
+    windows,
+    sessionStorage,
+    query,
+    createTab,
+    updateTab,
+    removeTab,
+    createWindow,
+    removeWindow,
+    alarmsOnAlarm,
+  };
 }
 
-describe('background tab isolation', () => {
+async function flush(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((r) => { resolve = r; });
+  return { promise, resolve };
+}
+
+describe('OpenCLI lifecycle parity', () => {
   beforeEach(() => {
     vi.resetModules();
+    vi.restoreAllMocks();
     vi.stubGlobal('WebSocket', MockWebSocket);
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline test'); }));
   });
 
-  it('lists only automation-window web tabs', async () => {
+  it('leases separate tabs for separate ephemeral sessions inside one shared automation container', async () => {
+    const { chrome, tabs } = createChromeMock();
+    vi.stubGlobal('chrome', chrome);
+
+    const mod = await import('./background');
+    mod.__test__.setAutomationWindowId(1);
+
+    const first = await mod.__test__.createOwnedTabLease('site:rednote:run-1', 'https://www.rednote.com/explore');
+    const second = await mod.__test__.createOwnedTabLease('site:twitter:run-2', 'https://x.com/home');
+
+    expect(first.tabId).toBe(1);
+    expect(second.tabId).not.toBe(first.tabId);
+    expect(tabs.find((tab) => tab.id === first.tabId)?.windowId).toBe(1);
+    expect(tabs.find((tab) => tab.id === second.tabId)?.windowId).toBe(1);
+    expect(chrome.windows.create).not.toHaveBeenCalled();
+  });
+
+  it('releases the last lease by detaching its target and leaving a reusable about:blank placeholder', async () => {
+    const { chrome, tabs } = createChromeMock({ initialUrl: 'https://www.rednote.com/' });
+    vi.stubGlobal('chrome', chrome);
+    const executor = await import('./cdp');
+    const detach = vi.spyOn(executor, 'detach').mockResolvedValue(undefined);
+    const mod = await import('./background');
+    mod.__test__.setAutomationWindowId(1);
+    mod.__test__.setSession('site:rednote:run-1', {
+      windowId: 1,
+      preferredTabId: 1,
+      lifecycle: 'ephemeral',
+    });
+
+    await mod.__test__.releaseLease('site:rednote:run-1', 'test release');
+
+    expect(detach).toHaveBeenCalledWith(1);
+    expect(chrome.tabs.update).toHaveBeenCalledWith(1, { url: 'about:blank', active: true });
+    expect(chrome.windows.remove).not.toHaveBeenCalled();
+    expect(tabs.find((tab) => tab.id === 1)?.url).toBe('about:blank');
+    expect(mod.__test__.getSession('site:rednote:run-1')).toBeNull();
+  });
+
+  it('removes only the released tab when another lease still owns a tab in the container', async () => {
     const { chrome } = createChromeMock();
     vi.stubGlobal('chrome', chrome);
-
+    const executor = await import('./cdp');
+    vi.spyOn(executor, 'detach').mockResolvedValue(undefined);
     const mod = await import('./background');
-    mod.__test__.setAutomationWindowId('site:twitter', 1);
+    mod.__test__.setAutomationWindowId(1);
 
-    const result = await mod.__test__.handleTabs({ id: '1', action: 'tabs', op: 'list', workspace: 'site:twitter' }, 'site:twitter');
+    const first = await mod.__test__.createOwnedTabLease('site:rednote:run-1');
+    const second = await mod.__test__.createOwnedTabLease('site:twitter:run-2');
+    chrome.tabs.remove.mockClear();
 
-    expect(result.ok).toBe(true);
-    expect(result.data).toEqual([
-      {
-        index: 0,
-        tabId: 1,
-        url: 'https://automation.example',
-        title: 'automation',
-        active: true,
-      },
-    ]);
+    await mod.__test__.releaseLease('site:rednote:run-1', 'test release');
+
+    expect(chrome.tabs.remove).toHaveBeenCalledWith(first.tabId);
+    expect(chrome.tabs.update).not.toHaveBeenCalledWith(first.tabId, { url: 'about:blank', active: true });
+    expect(mod.__test__.getSession('site:twitter:run-2')?.preferredTabId).toBe(second.tabId);
   });
 
-  it('creates new tabs inside the automation window', async () => {
-    const { chrome, create } = createChromeMock();
-    vi.stubGlobal('chrome', chrome);
-
-    const mod = await import('./background');
-    mod.__test__.setAutomationWindowId('site:twitter', 1);
-
-    const result = await mod.__test__.handleTabs({ id: '2', action: 'tabs', op: 'new', url: 'https://new.example', workspace: 'site:twitter' }, 'site:twitter');
-
-    expect(result.ok).toBe(true);
-    expect(create).toHaveBeenCalledWith({ windowId: 1, url: 'https://new.example', active: true });
-  });
-
-  it('reports sessions per workspace', async () => {
-    const { chrome } = createChromeMock();
-    vi.stubGlobal('chrome', chrome);
-
-    const mod = await import('./background');
-    mod.__test__.setAutomationWindowId('site:twitter', 1);
-    mod.__test__.setAutomationWindowId('site:zhihu', 2);
-
-    const result = await mod.__test__.handleSessions({ id: '3', action: 'sessions' });
-    expect(result.ok).toBe(true);
-    expect(result.data).toEqual(expect.arrayContaining([
-      expect.objectContaining({ workspace: 'site:twitter', windowId: 1 }),
-      expect.objectContaining({ workspace: 'site:zhihu', windowId: 2 }),
-    ]));
-  });
-  it('does not idle-close persistent site workspaces', async () => {
+  it('keeps persistent site leases alive without an idle deadline', async () => {
     vi.useFakeTimers();
     const { chrome } = createChromeMock();
     vi.stubGlobal('chrome', chrome);
-
     const mod = await import('./background');
-    mod.__test__.setAutomationWindowId('site:xiaohongshu', 1);
-    mod.__test__.resetWindowIdleTimer('site:xiaohongshu');
+    mod.__test__.setAutomationWindowId(1);
+    mod.__test__.setSession('site:rednote', {
+      windowId: 1,
+      preferredTabId: 1,
+      lifecycle: 'persistent',
+    });
+    mod.__test__.resetWindowIdleTimer('site:rednote');
 
     await vi.advanceTimersByTimeAsync(60_000);
-    expect(chrome.windows.remove).not.toHaveBeenCalled();
-    expect(mod.__test__.getSession('site:xiaohongshu')?.idleDeadlineAt).toBe(Number.POSITIVE_INFINITY);
+
+    expect(mod.__test__.getSession('site:rednote')?.idleDeadlineAt).toBe(0);
+    expect(chrome.tabs.update).not.toHaveBeenCalledWith(1, { url: 'about:blank', active: true });
+    expect(chrome.alarms.clear).toHaveBeenCalledWith(alarmName('site:rednote'));
     vi.useRealTimers();
   });
 
-
-  it('restores a persistent site window after a service-worker restart', async () => {
-    const { chrome } = createChromeMock();
-    vi.stubGlobal('chrome', chrome);
-
-    const firstWorker = await import('./background');
-    const firstWindowId = await firstWorker.__test__.getAutomationWindow(
-      'site:xiaohongshu',
-      'https://www.xiaohongshu.com/search_result?keyword=coffee',
-    );
-    expect(firstWindowId).toBe(1);
-    expect(chrome.windows.create).toHaveBeenCalledTimes(1);
-
-    // Simulate MV3 worker eviction: module memory disappears, Chrome windows and
-    // chrome.storage.session survive.
-    vi.resetModules();
-    const secondWorker = await import('./background');
-    const restoredWindowId = await secondWorker.__test__.getAutomationWindow(
-      'site:xiaohongshu',
-      'https://www.xiaohongshu.com/search_result?keyword=dessert',
-    );
-
-    expect(restoredWindowId).toBe(firstWindowId);
-    expect(chrome.windows.create).toHaveBeenCalledTimes(1);
-    expect(secondWorker.__test__.getSession('site:xiaohongshu')?.idleDeadlineAt)
-      .toBe(Number.POSITIVE_INFINITY);
-  });
-
-  it('still idle-closes one-shot workspaces', async () => {
-    vi.useFakeTimers();
-    const { chrome } = createChromeMock();
+  it('restores an ephemeral preferred-tab lease from storage.session after worker eviction', async () => {
+    const { chrome, sessionStorage } = createChromeMock({ initialUrl: 'https://www.rednote.com/' });
+    const deadline = Date.now() + 30_000;
+    sessionStorage[REGISTRY_KEY] = {
+      version: 2,
+      automationWindowId: 1,
+      leases: {
+        'site:rednote:run-1': {
+          session: 'site:rednote:run-1',
+          windowId: 1,
+          preferredTabId: 1,
+          lifecycle: 'ephemeral',
+          idleDeadlineAt: deadline,
+          updatedAt: Date.now(),
+        },
+      },
+    };
     vi.stubGlobal('chrome', chrome);
 
     const mod = await import('./background');
-    mod.__test__.setAutomationWindowId('default', 1);
-    mod.__test__.resetWindowIdleTimer('default');
+    await vi.waitFor(() => {
+      expect(mod.__test__.getSession('site:rednote:run-1')?.preferredTabId).toBe(1);
+    });
 
-    await vi.advanceTimersByTimeAsync(30_001);
-    expect(chrome.windows.remove).toHaveBeenCalledWith(1);
-    expect(mod.__test__.getSession('default')).toBeNull();
-    vi.useRealTimers();
+    expect(mod.__test__.getAutomationWindowId()).toBe(1);
+    expect(chrome.windows.create).not.toHaveBeenCalled();
   });
 
+  it('honors the persisted remaining idle lifetime instead of granting a fresh 30 seconds', async () => {
+    const { chrome, sessionStorage } = createChromeMock({ initialUrl: 'https://www.rednote.com/' });
+    const now = Date.now();
+    sessionStorage[REGISTRY_KEY] = {
+      version: 2,
+      automationWindowId: 1,
+      leases: {
+        'site:rednote:run-1': {
+          session: 'site:rednote:run-1',
+          windowId: 1,
+          preferredTabId: 1,
+          lifecycle: 'ephemeral',
+          idleDeadlineAt: now + 5_000,
+          updatedAt: now,
+        },
+      },
+    };
+    vi.stubGlobal('chrome', chrome);
+
+    const mod = await import('./background');
+    await mod.__test__.reconcileTargetLeaseRegistry();
+
+    const calls = chrome.alarms.create.mock.calls
+      .filter((call: unknown[]) => call[0] === alarmName('site:rednote:run-1'));
+    expect(calls.length).toBeGreaterThan(0);
+    const when = (calls.at(-1)![1] as { when: number }).when;
+    expect(when).toBeLessThan(now + 15_000);
+    expect(when).toBeGreaterThan(now + 1_000);
+  });
+
+  it('recovers a lost in-memory REDnote lease before close-window, then detaches and releases it', async () => {
+    const { chrome, sessionStorage, tabs } = createChromeMock({ initialUrl: 'https://www.rednote.com/' });
+    sessionStorage[REGISTRY_KEY] = {
+      version: 2,
+      automationWindowId: 1,
+      leases: {
+        'site:rednote:run-1': {
+          session: 'site:rednote:run-1',
+          windowId: 1,
+          preferredTabId: 1,
+          lifecycle: 'ephemeral',
+          idleDeadlineAt: Date.now() + 30_000,
+          updatedAt: Date.now(),
+        },
+      },
+    };
+    vi.stubGlobal('chrome', chrome);
+    const executor = await import('./cdp');
+    const detach = vi.spyOn(executor, 'detach').mockResolvedValue(undefined);
+    const mod = await import('./background');
+
+    const result = await mod.__test__.handleCommand({
+      id: 'close-after-worker-restart',
+      action: 'close-window',
+      session: 'site:rednote:run-1',
+      siteSession: 'ephemeral',
+    });
+
+    expect(result.ok).toBe(true);
+    expect(detach).toHaveBeenCalledWith(1);
+    expect(tabs.find((tab) => tab.id === 1)?.url).toBe('about:blank');
+    expect(mod.__test__.getSession('site:rednote:run-1')).toBeNull();
+  });
+
+  it('does not wipe the persisted registry when an idle alarm wakes the worker before recovery finishes', async () => {
+    const { chrome, sessionStorage, alarmsOnAlarm } = createChromeMock({ initialUrl: 'https://www.rednote.com/' });
+    sessionStorage[REGISTRY_KEY] = {
+      version: 2,
+      automationWindowId: 1,
+      leases: {
+        'site:rednote:run-1': {
+          session: 'site:rednote:run-1',
+          windowId: 1,
+          preferredTabId: 1,
+          lifecycle: 'ephemeral',
+          idleDeadlineAt: Date.now() + 30_000,
+          updatedAt: Date.now(),
+        },
+      },
+    };
+
+    const gate = deferred<void>();
+    const originalGet = chrome.storage.session.get;
+    chrome.storage.session.get = vi.fn(async (key: string) => {
+      if (key === REGISTRY_KEY) await gate.promise;
+      return originalGet(key);
+    });
+    vi.stubGlobal('chrome', chrome);
+
+    await import('./background');
+    const listener = alarmsOnAlarm.listeners[0];
+    expect(listener).toBeDefined();
+    const alarmDone = listener({ name: alarmName('site:rednote:run-1') });
+
+    await flush();
+    expect((sessionStorage[REGISTRY_KEY] as any).leases['site:rednote:run-1']).toBeDefined();
+
+    gate.resolve();
+    await alarmDone;
+  });
 });

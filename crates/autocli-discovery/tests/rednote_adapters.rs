@@ -7,7 +7,7 @@ fn pipeline_text(command: &autocli_core::CliCommand) -> String {
 }
 
 #[test]
-fn rednote_search_stays_on_rednote_host_and_persists_session() {
+fn rednote_search_stays_on_rednote_host_with_ephemeral_session() {
     let command = parse_yaml_adapter(include_str!("../../../adapters/rednote/search.yaml"))
         .expect("parse rednote search adapter");
 
@@ -15,7 +15,7 @@ fn rednote_search_stays_on_rednote_host_and_persists_session() {
     assert_eq!(command.name, "search");
     assert_eq!(command.domain.as_deref(), Some("www.rednote.com"));
     assert_eq!(command.strategy, Strategy::Cookie);
-    assert_eq!(command.site_session, SiteSession::Persistent);
+    assert_eq!(command.site_session, SiteSession::Ephemeral);
 
     let pipeline = pipeline_text(&command);
     assert!(pipeline.contains("https://www.rednote.com/search_result"));
@@ -24,7 +24,7 @@ fn rednote_search_stays_on_rednote_host_and_persists_session() {
 }
 
 #[test]
-fn rednote_feed_builds_signed_rednote_urls_and_persists_session() {
+fn rednote_feed_builds_signed_rednote_urls_with_ephemeral_session() {
     let command = parse_yaml_adapter(include_str!("../../../adapters/rednote/feed.yaml"))
         .expect("parse rednote feed adapter");
 
@@ -32,7 +32,7 @@ fn rednote_feed_builds_signed_rednote_urls_and_persists_session() {
     assert_eq!(command.name, "feed");
     assert_eq!(command.domain.as_deref(), Some("www.rednote.com"));
     assert_eq!(command.strategy, Strategy::Cookie);
-    assert_eq!(command.site_session, SiteSession::Persistent);
+    assert_eq!(command.site_session, SiteSession::Ephemeral);
 
     let pipeline = pipeline_text(&command);
     assert!(pipeline.contains("https://www.rednote.com/explore"));
@@ -47,7 +47,7 @@ fn assert_rednote_detail_adapter(name: &str, yaml: &str) {
     assert_eq!(command.name, name);
     assert_eq!(command.domain.as_deref(), Some("www.rednote.com"));
     assert_eq!(command.strategy, Strategy::Cookie);
-    assert_eq!(command.site_session, SiteSession::Persistent);
+    assert_eq!(command.site_session, SiteSession::Ephemeral);
     let pipeline = pipeline_text(&command);
     assert!(pipeline.contains("args.note_url"));
     assert!(pipeline.contains("SECURITY_BLOCK"));
@@ -55,7 +55,7 @@ fn assert_rednote_detail_adapter(name: &str, yaml: &str) {
 }
 
 #[test]
-fn rednote_note_stays_on_rednote_host_and_persists_session() {
+fn rednote_note_stays_on_rednote_host_with_ephemeral_session() {
     assert_rednote_detail_adapter(
         "note",
         include_str!("../../../adapters/rednote/note.yaml"),
@@ -63,7 +63,7 @@ fn rednote_note_stays_on_rednote_host_and_persists_session() {
 }
 
 #[test]
-fn rednote_comments_stays_on_rednote_host_and_persists_session() {
+fn rednote_comments_stays_on_rednote_host_with_ephemeral_session() {
     let yaml = include_str!("../../../adapters/rednote/comments.yaml");
     assert_rednote_detail_adapter("comments", yaml);
     let command = parse_yaml_adapter(yaml).expect("parse rednote comments adapter");

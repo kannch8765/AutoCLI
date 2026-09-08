@@ -18,7 +18,11 @@ export interface Command {
   tabId?: number;
   /** JS code to evaluate in page context (exec action) */
   code?: string;
-  /** Logical workspace for automation session reuse */
+  /** OpenCLI-compatible logical browser session name. */
+  session?: string;
+  /** Adapter site-session lifecycle. Persistent sessions do not idle-expire. */
+  siteSession?: 'ephemeral' | 'persistent';
+  /** Legacy AutoCLI session field accepted for older binaries during migration. */
   workspace?: string;
   /** URL to navigate to (navigate action) */
   url?: string;
