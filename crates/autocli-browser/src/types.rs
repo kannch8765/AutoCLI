@@ -10,7 +10,11 @@ pub struct DaemonCommand {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub workspace: Option<String>,
+    pub session: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub surface: Option<String>,
+    #[serde(rename = "siteSession", skip_serializing_if = "Option::is_none")]
+    pub site_session: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tab_id: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -24,7 +28,9 @@ impl DaemonCommand {
             action: action.into(),
             code: None,
             url: None,
-            workspace: None,
+            session: None,
+            surface: None,
+            site_session: None,
             tab_id: None,
             format: None,
         }
@@ -40,8 +46,18 @@ impl DaemonCommand {
         self
     }
 
-    pub fn with_workspace(mut self, workspace: impl Into<String>) -> Self {
-        self.workspace = Some(workspace.into());
+    pub fn with_session(mut self, session: impl Into<String>) -> Self {
+        self.session = Some(session.into());
+        self
+    }
+
+    pub fn with_surface(mut self, surface: impl Into<String>) -> Self {
+        self.surface = Some(surface.into());
+        self
+    }
+
+    pub fn with_site_session(mut self, site_session: impl Into<String>) -> Self {
+        self.site_session = Some(site_session.into());
         self
     }
 
@@ -99,6 +115,10 @@ pub struct DaemonResult {
     pub data: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    #[serde(rename = "errorCode", skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
+    #[serde(rename = "errorHint", skip_serializing_if = "Option::is_none")]
+    pub error_hint: Option<String>,
 }
 
 impl DaemonResult {
@@ -108,6 +128,8 @@ impl DaemonResult {
             ok: true,
             data: Some(data),
             error: None,
+            error_code: None,
+            error_hint: None,
         }
     }
 
@@ -117,6 +139,42 @@ impl DaemonResult {
             ok: false,
             data: None,
             error: Some(error),
+            error_code: None,
+            error_hint: None,
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DaemonCommand, DaemonResult};
+
+    #[test]
+    fn daemon_command_serializes_opencli_session_fields() {
+        let cmd = DaemonCommand::new("exec")
+            .with_session("site:rednote:run-1")
+            .with_surface("adapter")
+            .with_site_session("ephemeral");
+        let value = serde_json::to_value(cmd).expect("serialize daemon command");
+
+        assert_eq!(value.get("session").and_then(|v| v.as_str()), Some("site:rednote:run-1"));
+        assert_eq!(value.get("surface").and_then(|v| v.as_str()), Some("adapter"));
+        assert_eq!(value.get("siteSession").and_then(|v| v.as_str()), Some("ephemeral"));
+        assert!(value.get("workspace").is_none());
+    }
+    #[test]
+    fn daemon_result_deserializes_opencli_error_fields() {
+        let result: DaemonResult = serde_json::from_value(serde_json::json!({
+            "id": "cmd-1",
+            "ok": false,
+            "error": "Debugger is not attached to the tab",
+            "errorCode": "attach_failed",
+            "errorHint": "retry after the extension settles"
+        }))
+        .expect("deserialize daemon result");
+
+        assert_eq!(result.error_code.as_deref(), Some("attach_failed"));
+        assert_eq!(result.error_hint.as_deref(), Some("retry after the extension settles"));
+    }
+
 }

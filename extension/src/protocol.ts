@@ -18,8 +18,12 @@ export interface Command {
   tabId?: number;
   /** JS code to evaluate in page context (exec action) */
   code?: string;
-  /** Logical workspace for automation session reuse */
-  workspace?: string;
+  /** OpenCLI-compatible logical browser session name. */
+  session?: string;
+  /** Runtime surface selecting OpenCLI's owned-container policy. */
+  surface?: 'browser' | 'adapter';
+  /** Adapter site-session lifecycle. Persistent adapter sessions do not idle-expire. */
+  siteSession?: 'ephemeral' | 'persistent';
   /** URL to navigate to (navigate action) */
   url?: string;
   /** Sub-operation for tabs: list, new, close, select */
@@ -53,6 +57,10 @@ export interface Result {
   data?: unknown;
   /** Error message on failure */
   error?: string;
+  /** Stable machine-readable error code on failure (OpenCLI transport contract). */
+  errorCode?: string;
+  /** Optional recovery hint paired with errorCode. */
+  errorHint?: string;
 }
 
 /** Default daemon port */

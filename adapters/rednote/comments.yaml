@@ -6,7 +6,6 @@ description: "读取 REDnote 笔记评论（支持楼中楼子回复）"
 domain: www.rednote.com
 strategy: cookie
 browser: true
-siteSession: persistent
 
 args:
   note_url:
