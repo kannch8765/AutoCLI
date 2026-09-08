@@ -1,0 +1,15 @@
+name: Baseline Windows Download Test
+on:
+  push:
+    branches:
+      - build/baseline-download-windows-eb3db70
+permissions:
+  contents: read
+jobs:
+  baseline:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Run known failing baseline test
+        run: cargo test -p autocli-pipeline steps::download::tests::test_download_with_url_in_data -- --exact --nocapture
