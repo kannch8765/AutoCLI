@@ -597,8 +597,8 @@ impl StepHandler for CollectStep {
         let js = format!(
             r#"(() => {{
   const args = {args_json};
-  const requests = window.__opencli_intercepted || [];
-  window.__opencli_intercepted = [];
+  const requests = window.__autocli_intercepted || [];
+  window.__autocli_intercepted = [];
   const parseFn = {parse_fn};
   return parseFn(requests);
 }})()"#
@@ -643,6 +643,7 @@ mod tests {
     struct MockPage {
         goto_url: std::sync::Mutex<Option<String>>,
         evaluate_result: Value,
+        evaluate_expression: std::sync::Mutex<Option<String>>,
     }
 
     impl MockPage {
@@ -650,6 +651,7 @@ mod tests {
             Self {
                 goto_url: std::sync::Mutex::new(None),
                 evaluate_result,
+                evaluate_expression: std::sync::Mutex::new(None),
             }
         }
     }
@@ -673,7 +675,8 @@ mod tests {
         async fn content(&self) -> Result<String, CliError> {
             Ok("<html></html>".to_string())
         }
-        async fn evaluate(&self, _expression: &str) -> Result<Value, CliError> {
+        async fn evaluate(&self, expression: &str) -> Result<Value, CliError> {
+            *self.evaluate_expression.lock().unwrap() = Some(expression.to_string());
             Ok(self.evaluate_result.clone())
         }
         async fn wait_for_selector(
@@ -797,6 +800,25 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result, json!({"items": [1, 2, 3]}));
+    }
+
+    #[tokio::test]
+    async fn test_collect_step_reads_autocli_interceptor_buffer() {
+        let mock = Arc::new(MockPage::new(json!([{"ok": true}])));
+        let step = CollectStep;
+        let result = step
+            .execute(
+                Some(mock.clone()),
+                &json!({"parse": "(requests) => requests"}),
+                &json!(null),
+                &empty_args(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result, json!([{"ok": true}]));
+        let expression = mock.evaluate_expression.lock().unwrap().clone().unwrap();
+        assert!(expression.contains("window.__autocli_intercepted"));
+        assert!(!expression.contains("window.__opencli_intercepted"));
     }
 
     #[tokio::test]
