@@ -46,6 +46,42 @@ fn render_str_param(
 // NavigateStep
 // ---------------------------------------------------------------------------
 
+fn is_navigation_rejected(error: &CliError) -> bool {
+    error.to_string().to_ascii_lowercase().contains("navigation rejected")
+}
+
+/// Port of OpenCLI's existing navigation-recovery pattern used by adapters
+/// such as google/images: on Chrome's `Navigation rejected`, release the
+/// automation lease and retry once; if Chrome still rejects that navigation,
+/// create a fresh tab at the target URL and bind the page to it.
+async fn navigate_with_opencli_recovery(
+    page: &Arc<dyn IPage>,
+    url: &str,
+) -> Result<(), CliError> {
+    match page.goto(url, None).await {
+        Ok(()) => return Ok(()),
+        Err(error) if is_navigation_rejected(&error) => {}
+        Err(error) => return Err(error),
+    }
+
+    // OpenCLI's helper deliberately ignores close-window failure: the lease may
+    // already have disappeared, and the next goto is the authoritative probe.
+    let _ = page.close().await;
+
+    let second_error = match page.goto(url, None).await {
+        Ok(()) => return Ok(()),
+        Err(error) if is_navigation_rejected(&error) => error,
+        Err(error) => return Err(error),
+    };
+
+    if let Some(tab_id) = page.new_tab(Some(url)).await? {
+        page.switch_tab(&tab_id).await?;
+        return Ok(());
+    }
+
+    Err(second_error)
+}
+
 pub struct NavigateStep;
 
 #[async_trait]
@@ -89,7 +125,7 @@ impl StepHandler for NavigateStep {
             _ => return Err(CliError::pipeline("navigate expects a string URL or {url, settleMs} object")),
         };
 
-        pg.goto(&url, None).await?;
+        navigate_with_opencli_recovery(&pg, &url).await?;
 
         if let Some(ms) = settle_ms {
             // Explicit settleMs: use fixed wait
@@ -642,17 +678,35 @@ mod tests {
     // Mock IPage for testing
     struct MockPage {
         goto_url: std::sync::Mutex<Option<String>>,
+        goto_failures: std::sync::Mutex<std::collections::VecDeque<String>>,
         evaluate_result: Value,
         evaluate_expression: std::sync::Mutex<Option<String>>,
+        close_calls: std::sync::atomic::AtomicUsize,
+        new_tab_result: std::sync::Mutex<Option<String>>,
+        new_tab_calls: std::sync::atomic::AtomicUsize,
+        switched_tab: std::sync::Mutex<Option<String>>,
     }
 
     impl MockPage {
         fn new(evaluate_result: Value) -> Self {
             Self {
                 goto_url: std::sync::Mutex::new(None),
+                goto_failures: std::sync::Mutex::new(std::collections::VecDeque::new()),
                 evaluate_result,
                 evaluate_expression: std::sync::Mutex::new(None),
+                close_calls: std::sync::atomic::AtomicUsize::new(0),
+                new_tab_result: std::sync::Mutex::new(None),
+                new_tab_calls: std::sync::atomic::AtomicUsize::new(0),
+                switched_tab: std::sync::Mutex::new(None),
             }
+        }
+
+        fn fail_navigation(&self, message: &str) {
+            self.goto_failures.lock().unwrap().push_back(message.to_string());
+        }
+
+        fn set_new_tab_result(&self, tab_id: &str) {
+            *self.new_tab_result.lock().unwrap() = Some(tab_id.to_string());
         }
     }
 
@@ -664,6 +718,9 @@ mod tests {
             _options: Option<autocli_core::GotoOptions>,
         ) -> Result<(), CliError> {
             *self.goto_url.lock().unwrap() = Some(url.to_string());
+            if let Some(message) = self.goto_failures.lock().unwrap().pop_front() {
+                return Err(CliError::browser_command(message, None, None));
+            }
             Ok(())
         }
         async fn url(&self) -> Result<String, CliError> {
@@ -731,10 +788,18 @@ mod tests {
         async fn tabs(&self) -> Result<Vec<autocli_core::TabInfo>, CliError> {
             Ok(vec![])
         }
-        async fn switch_tab(&self, _tab_id: &str) -> Result<(), CliError> {
+        async fn new_tab(&self, _url: Option<&str>) -> Result<Option<String>, CliError> {
+            self.new_tab_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(self.new_tab_result.lock().unwrap().clone())
+        }
+        async fn switch_tab(&self, tab_id: &str) -> Result<(), CliError> {
+            *self.switched_tab.lock().unwrap() = Some(tab_id.to_string());
             Ok(())
         }
         async fn close(&self) -> Result<(), CliError> {
+            self.close_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(())
         }
         async fn intercept_requests(&self, _url_pattern: &str) -> Result<(), CliError> {
@@ -783,6 +848,77 @@ mod tests {
         assert_eq!(
             *mock.goto_url.lock().unwrap(),
             Some("https://example.com".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_navigate_recovers_navigation_rejected_after_close() {
+        let mock = Arc::new(MockPage::new(json!(null)));
+        mock.fail_navigation("Navigation rejected.");
+        let step = NavigateStep;
+        let result = step
+            .execute(
+                Some(mock.clone()),
+                &json!("https://example.com"),
+                &json!({"key": "value"}),
+                &empty_args(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result, json!({"key": "value"}));
+        assert_eq!(
+            mock.close_calls.load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+        assert_eq!(
+            mock.new_tab_calls.load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn test_navigate_falls_back_to_fresh_tab_after_second_rejection() {
+        let mock = Arc::new(MockPage::new(json!(null)));
+        mock.fail_navigation("Navigation rejected.");
+        mock.fail_navigation("Navigation rejected.");
+        mock.set_new_tab_result("99");
+        let step = NavigateStep;
+        step.execute(
+            Some(mock.clone()),
+            &json!("https://example.com"),
+            &json!(null),
+            &empty_args(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            mock.new_tab_calls.load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+        assert_eq!(mock.switched_tab.lock().unwrap().as_deref(), Some("99"));
+    }
+
+    #[tokio::test]
+    async fn test_navigate_does_not_recover_unrelated_errors() {
+        let mock = Arc::new(MockPage::new(json!(null)));
+        mock.fail_navigation("DNS lookup failed");
+        let step = NavigateStep;
+        let err = step
+            .execute(
+                Some(mock.clone()),
+                &json!("https://example.com"),
+                &json!(null),
+                &empty_args(),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("DNS lookup failed"));
+        assert_eq!(
+            mock.close_calls.load(std::sync::atomic::Ordering::SeqCst),
+            0
         );
     }
 

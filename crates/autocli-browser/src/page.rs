@@ -277,7 +277,9 @@ impl IPage for DaemonPage {
 
     async fn close(&self) -> Result<(), CliError> {
         let cmd = self.cmd("close-window").await;
-        self.send(cmd).await?;
+        let result = self.send(cmd).await;
+        *self.tab_id.write().await = None;
+        result?;
         Ok(())
     }
 
