@@ -12,7 +12,7 @@ args:
     type: int
     default: 20
 
-columns: [author, text, likes, url]
+columns: [author, text, likes, url, has_media, media_urls, media_posters]
 
 pipeline:
   - navigate:
@@ -100,6 +100,33 @@ pipeline:
             + '&features=' + encodeURIComponent(JSON.stringify(FEATURES));
         }
 
+        function extractMedia(legacy) {
+          const media = legacy?.extended_entities?.media || legacy?.entities?.media;
+          if (!Array.isArray(media) || media.length === 0) {
+            return { has_media: false, media_urls: [], media_posters: [] };
+          }
+          const urls = [];
+          const posters = [];
+          for (const m of media) {
+            if (!m) continue;
+            if (m.type === 'video' || m.type === 'animated_gif') {
+              const variants = m.video_info?.variants || [];
+              const mp4 = variants.find((v) => v?.content_type === 'video/mp4');
+              const url = mp4?.url || m.media_url_https;
+              if (url) {
+                urls.push(url);
+                posters.push(m.media_url_https || url);
+              }
+            } else {
+              if (m.media_url_https) {
+                urls.push(m.media_url_https);
+                posters.push(m.media_url_https);
+              }
+            }
+          }
+          return { has_media: urls.length > 0, media_urls: urls, media_posters: posters };
+        }
+
         function extractBookmarkTweet(result, seen) {
           if (!result) return null;
           const tw = result.tweet || result;
@@ -114,6 +141,7 @@ pipeline:
             text: noteText || legacy.full_text || '',
             likes: legacy.favorite_count || 0,
             url: 'https://x.com/' + screenName + '/status/' + tw.rest_id,
+            ...extractMedia(legacy),
           };
         }
 
