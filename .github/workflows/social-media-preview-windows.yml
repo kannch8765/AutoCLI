@@ -1,0 +1,42 @@
+name: Build Social Media Preview Windows Package
+
+on:
+  push:
+    branches:
+      - build/social-media-preview-windows-edb7b66
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Run discovery tests
+        run: cargo test -p autocli-discovery --tests
+
+      - name: Build AutoCLI
+        run: cargo build --release --target x86_64-pc-windows-msvc
+
+      - name: Package smoke binary
+        shell: pwsh
+        run: |
+          $commit = (git rev-parse HEAD).Trim()
+          Set-Content -Path BUILD-COMMIT.txt -Value $commit
+          Compress-Archive -Path target/x86_64-pc-windows-msvc/release/autocli.exe,BUILD-COMMIT.txt -DestinationPath autocli-social-media-preview-windows.zip
+          Get-FileHash autocli-social-media-preview-windows.zip -Algorithm SHA256 | Format-List
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: autocli-social-media-preview-windows
+          path: autocli-social-media-preview-windows.zip
+          if-no-files-found: error
