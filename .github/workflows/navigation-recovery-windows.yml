@@ -1,0 +1,36 @@
+name: navigation-recovery-windows
+on:
+  push:
+    branches:
+      - build/navigation-recovery-windows-6d34420
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - name: Validate browser recovery
+        shell: pwsh
+        run: |
+          cargo test -p autocli-browser
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p autocli-pipeline steps::browser::tests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build release
+        shell: pwsh
+        run: cargo build --release --target x86_64-pc-windows-msvc
+      - name: Package
+        shell: pwsh
+        run: |
+          $out = "package"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          Copy-Item "target/x86_64-pc-windows-msvc/release/autocli.exe" "$out/autocli.exe"
+          git rev-parse HEAD | Out-File -Encoding ascii "$out/BUILD-COMMIT.txt"
+          Compress-Archive -Path "$out/*" -DestinationPath "autocli-navigation-recovery-windows.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: autocli-navigation-recovery-windows
+          path: autocli-navigation-recovery-windows.zip
+          if-no-files-found: error
