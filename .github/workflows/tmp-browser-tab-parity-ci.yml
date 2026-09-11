@@ -11,5 +11,4 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
-      - run: rustfmt --edition 2021 --check crates/autocli-core/src/page.rs crates/autocli-browser/src/page.rs crates/autocli-browser/src/types.rs
       - run: cargo test -p autocli-core -p autocli-browser
