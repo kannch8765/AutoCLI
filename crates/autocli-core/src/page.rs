@@ -179,6 +179,12 @@ pub trait IPage: Send + Sync {
     /// List open tabs
     async fn tabs(&self) -> Result<Vec<TabInfo>, CliError>;
 
+    /// Create a new tab and return its browser identity when supported.
+    /// Mirrors OpenCLI Page.newTab; direct-CDP backends may leave this unsupported.
+    async fn new_tab(&self, _url: Option<&str>) -> Result<Option<String>, CliError> {
+        Ok(None)
+    }
+
     /// Switch to a tab by ID
     async fn switch_tab(&self, tab_id: &str) -> Result<(), CliError>;
 

@@ -15,8 +15,12 @@ pub struct DaemonCommand {
     pub surface: Option<String>,
     #[serde(rename = "siteSession", skip_serializing_if = "Option::is_none")]
     pub site_session: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "tabId", skip_serializing_if = "Option::is_none")]
     pub tab_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub op: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub index: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub format: Option<String>,
 }
@@ -32,6 +36,8 @@ impl DaemonCommand {
             surface: None,
             site_session: None,
             tab_id: None,
+            op: None,
+            index: None,
             format: None,
         }
     }
@@ -63,6 +69,16 @@ impl DaemonCommand {
 
     pub fn with_tab_id(mut self, tab_id: u64) -> Self {
         self.tab_id = Some(tab_id);
+        self
+    }
+
+    pub fn with_op(mut self, op: impl Into<String>) -> Self {
+        self.op = Some(op.into());
+        self
+    }
+
+    pub fn with_index(mut self, index: u64) -> Self {
+        self.index = Some(index);
         self
     }
 
@@ -161,6 +177,19 @@ mod tests {
         assert_eq!(value.get("surface").and_then(|v| v.as_str()), Some("adapter"));
         assert_eq!(value.get("siteSession").and_then(|v| v.as_str()), Some("ephemeral"));
         assert!(value.get("workspace").is_none());
+    }
+
+    #[test]
+    fn daemon_command_serializes_tab_operations() {
+        let cmd = DaemonCommand::new("tabs")
+            .with_op("select")
+            .with_tab_id(42)
+            .with_index(3);
+        let value = serde_json::to_value(cmd).expect("serialize daemon command");
+        assert_eq!(value.get("op").and_then(|v| v.as_str()), Some("select"));
+        assert_eq!(value.get("tabId").and_then(|v| v.as_u64()), Some(42));
+        assert!(value.get("tab_id").is_none());
+        assert_eq!(value.get("index").and_then(|v| v.as_u64()), Some(3));
     }
     #[test]
     fn daemon_result_deserializes_opencli_error_fields() {

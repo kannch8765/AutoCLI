@@ -214,21 +214,64 @@ impl IPage for DaemonPage {
     }
 
     async fn tabs(&self) -> Result<Vec<TabInfo>, CliError> {
-        let cmd = self.cmd("tabs").await;
+        let cmd = self.cmd("tabs").await.with_op("list");
         let val = self.send(cmd).await?;
-        let tabs: Vec<TabInfo> = serde_json::from_value(val).unwrap_or_default();
+        let tabs = val
+            .as_array()
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| {
+                        let id = item
+                            .get("tabId")
+                            .and_then(|v| {
+                                v.as_u64()
+                                    .map(|id| id.to_string())
+                                    .or_else(|| v.as_str().map(str::to_string))
+                            })?;
+                        Some(TabInfo {
+                            id,
+                            url: item
+                                .get("url")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                            title: item
+                                .get("title")
+                                .and_then(|v| v.as_str())
+                                .map(str::to_string),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         Ok(tabs)
+    }
+
+    async fn new_tab(&self, url: Option<&str>) -> Result<Option<String>, CliError> {
+        let mut cmd = self.cmd("tabs").await.with_op("new");
+        if let Some(url) = url {
+            cmd = cmd.with_url(url);
+        }
+        let val = self.send(cmd).await?;
+        Ok(val.get("tabId").and_then(|v| {
+            v.as_u64()
+                .map(|id| id.to_string())
+                .or_else(|| v.as_str().map(str::to_string))
+        }))
     }
 
     async fn switch_tab(&self, tab_id: &str) -> Result<(), CliError> {
         let tid: u64 = tab_id
             .parse()
             .map_err(|_| CliError::argument(format!("Invalid tab id: {tab_id}")))?;
-        *self.tab_id.write().await = Some(tid);
-        let mut cmd = self.cmd("tabs").await;
-        cmd.url = Some("switch".to_string());
-        cmd.tab_id = Some(tid);
+        let cmd = self
+            .cmd("tabs")
+            .await
+            .with_op("select")
+            .with_tab_id(tid);
         self.send(cmd).await?;
+        *self.tab_id.write().await = Some(tid);
         Ok(())
     }
 
