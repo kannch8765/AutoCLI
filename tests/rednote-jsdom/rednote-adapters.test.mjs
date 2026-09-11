@@ -22,7 +22,12 @@ function extractEvaluate(relativeUrl) {
 }
 
 const NOTE_EVALUATE = extractEvaluate('../../adapters/rednote/note.yaml');
+const PREVIEW_EVALUATE = extractEvaluate('../../adapters/rednote/preview.yaml');
 const COMMENTS_TEMPLATE = extractEvaluate('../../adapters/rednote/comments.yaml');
+
+function renderPreviewEvaluate(url) {
+  return PREVIEW_EVALUATE.replace('${{ args.note_url | json }}', JSON.stringify(url));
+}
 
 function renderCommentsEvaluate({ withReplies = false, limit = 20 } = {}) {
   return COMMENTS_TEMPLATE
@@ -68,6 +73,18 @@ async function runEvaluate(source, html, options) {
 async function runNote(html, options) {
   const result = await runEvaluate(NOTE_EVALUATE, html, options);
   return result;
+}
+
+async function runPreview(html, { url = 'https://www.rednote.com/explore/abc123?xsec_token=test', state } = {}) {
+  const ctx = makeDom(html, { url });
+  if (state !== undefined) ctx.window.__INITIAL_STATE__ = state;
+  try {
+    const value = ctx.window.eval(renderPreviewEvaluate(url));
+    return { ...ctx, value: await value };
+  } catch (error) {
+    ctx.dom.window.close();
+    throw error;
+  }
 }
 
 async function runComments(html, { withReplies = false, limit = 20, url } = {}) {
@@ -305,6 +322,65 @@ test('comments rejects out-of-range limit before extraction', async () => {
 test('comments SECURITY_BLOCK takes precedence over LOGIN_REQUIRED', async () => {
   await assert.rejects(
     () => runComments('<main>安全限制 请登录</main>', { limit: 1 }),
+    /SECURITY_BLOCK/,
+  );
+});
+
+
+test('preview preserves canonical imageList order, normalizes URLs, and prefers structured state over DOM', async () => {
+  const state = {
+    note: {
+      noteDetailMap: {
+        abc123: {
+          note: {
+            imageList: [
+              { urlDefault: 'https://sns-img-bd.xhscdn.com/first/imageView2/2/w/1080?x=1' },
+              { urlDefault: 'https://sns-img-bd.xhscdn.com/second?x=2' },
+            ],
+          },
+        },
+      },
+    },
+  };
+  const { value, dom } = await runPreview(
+    '<div class="swiper-slide"><img src="https://sns-img-bd.xhscdn.com/dom-wrong"></div>',
+    { state },
+  );
+  assert.deepEqual(JSON.parse(JSON.stringify(value)), [
+    { type: 'image', url: 'https://sns-img-bd.xhscdn.com/first' },
+    { type: 'image', url: 'https://sns-img-bd.xhscdn.com/second' },
+  ]);
+  dom.window.close();
+});
+
+test('preview emits structured video before images and skips blob fallback', async () => {
+  const state = {
+    note: {
+      noteDetailMap: {
+        abc123: {
+          note: {
+            imageList: [{ urlDefault: 'https://sns-img-bd.xhscdn.com/photo' }],
+            video: {
+              originVideoKey: 'video-key.mp4',
+              media: { stream: { h264: [{ masterUrl: 'https://sns-video-bd.xhscdn.com/master.mp4' }] } },
+            },
+          },
+        },
+      },
+    },
+  };
+  const { value, dom } = await runPreview('<video src="blob:https://www.rednote.com/ignored"></video>', { state });
+  assert.deepEqual(JSON.parse(JSON.stringify(value)), [
+    { type: 'video', url: 'https://sns-video-bd.xhscdn.com/video-key.mp4' },
+    { type: 'video', url: 'https://sns-video-bd.xhscdn.com/master.mp4' },
+    { type: 'image', url: 'https://sns-img-bd.xhscdn.com/photo' },
+  ]);
+  dom.window.close();
+});
+
+test('preview security block wins and returns no media', async () => {
+  await assert.rejects(
+    () => runPreview('<main>安全限制</main>'),
     /SECURITY_BLOCK/,
   );
 });

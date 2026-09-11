@@ -74,3 +74,21 @@ fn rednote_comments_stays_on_rednote_host_with_ephemeral_session() {
     assert!(pipeline.contains("reply_to"));
     assert!(pipeline.contains("MALFORMED_ROW"));
 }
+
+#[test]
+fn rednote_preview_is_haru_local_media_projection_of_opencli_download_extractor() {
+    let command = parse_yaml_adapter(include_str!("../../../adapters/rednote/preview.yaml"))
+        .expect("parse rednote preview adapter");
+    assert_eq!(command.site, "rednote");
+    assert_eq!(command.name, "preview");
+    assert_eq!(command.domain.as_deref(), Some("www.rednote.com"));
+    assert_eq!(command.strategy, Strategy::Cookie);
+    assert_eq!(command.site_session, SiteSession::Ephemeral);
+    let pipeline = pipeline_text(&command);
+    assert!(pipeline.contains("__INITIAL_STATE__"));
+    assert!(pipeline.contains("imageList"));
+    assert!(pipeline.contains("originVideoKey"));
+    assert!(pipeline.contains("media: []"));
+    assert!(pipeline.contains("return result.media"));
+    assert!(!pipeline.contains("downloadMedia"));
+}

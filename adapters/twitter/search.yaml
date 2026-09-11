@@ -16,96 +16,257 @@ args:
     type: int
     default: 15
 
-columns: [id, author, text, likes, retweets, replies, views, url]
+columns: [id, author, text, likes, retweets, replies, views, url, has_media, media_urls, media_posters]
 
 pipeline:
   - navigate:
-      url: https://x.com/search?q=${{ args.query }}&src=typed_query&f=top
-      settleMs: 5000
-
-  - scroll:
-      times: 3
-      delayMs: 1500
+      url: https://x.com/home
+      settleMs: 1000
 
   - evaluate: |
-      (() => {
-        const limit = ${{ args.limit }};
-        const articles = document.querySelectorAll('article[data-testid="tweet"]');
-        const results = [];
+      (async () => {
+        const BEARER_TOKEN = 'AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA';
+        const SEARCH_TIMELINE_OPERATION = {
+          queryId: 'Yw6L66Pw54NHKuq4Dp7b4Q',
+          features: {
+            rweb_video_screen_enabled: true,
+            rweb_cashtags_enabled: true,
+            profile_label_improvements_pcf_label_in_post_enabled: true,
+            responsive_web_profile_redirect_enabled: true,
+            rweb_tipjar_consumption_enabled: true,
+            verified_phone_label_enabled: false,
+            creator_subscriptions_tweet_preview_api_enabled: true,
+            responsive_web_graphql_timeline_navigation_enabled: true,
+            responsive_web_graphql_skip_user_profile_image_extensions_enabled: false,
+            premium_content_api_read_enabled: false,
+            communities_web_enable_tweet_community_results_fetch: true,
+            c9s_tweet_anatomy_moderator_badge_enabled: true,
+            responsive_web_grok_analyze_button_fetch_trends_enabled: false,
+            responsive_web_grok_analyze_post_followups_enabled: true,
+            rweb_cashtags_composer_attachment_enabled: true,
+            responsive_web_jetfuel_frame: true,
+            responsive_web_grok_share_attachment_enabled: true,
+            responsive_web_grok_annotations_enabled: true,
+            articles_preview_enabled: true,
+            responsive_web_edit_tweet_api_enabled: true,
+            graphql_is_translatable_rweb_tweet_is_translatable_enabled: true,
+            view_counts_everywhere_api_enabled: true,
+            longform_notetweets_consumption_enabled: true,
+            responsive_web_twitter_article_tweet_consumption_enabled: true,
+            content_disclosure_indicator_enabled: true,
+            content_disclosure_ai_generated_indicator_enabled: true,
+            responsive_web_grok_show_grok_translated_post: false,
+            responsive_web_grok_analysis_button_from_backend: true,
+            post_ctas_fetch_enabled: false,
+            freedom_of_speech_not_reach_fetch_enabled: true,
+            standardized_nudges_misinfo: true,
+            tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled: true,
+            longform_notetweets_rich_text_read_enabled: true,
+            longform_notetweets_inline_media_enabled: true,
+            responsive_web_grok_image_annotation_enabled: true,
+            responsive_web_grok_imagine_annotation_enabled: true,
+            responsive_web_grok_community_note_auto_translation_is_enabled: false,
+            responsive_web_enhance_cards_enabled: false,
+          },
+          fieldToggles: {
+            withPayments: true,
+            withAuxiliaryUserLabels: true,
+            withArticleRichContentState: true,
+            withArticlePlainText: true,
+            withArticleSummaryText: true,
+            withArticleVoiceOver: true,
+            withGrokAnalyze: true,
+            withDisallowedReplyControls: true,
+          },
+        };
 
-        for (const article of articles) {
-          if (results.length >= limit) break;
+        const query = String(${{ args.query | json }} || '').trim();
+        const limit = Number(${{ args.limit }});
+        if (!query) throw new Error('twitter search query is empty');
+        if (!Number.isInteger(limit) || limit <= 0) throw new Error('twitter search --limit must be a positive integer');
+
+        const ct0 = document.cookie.split(';').map(c => c.trim()).find(c => c.startsWith('ct0='))?.split('=')[1] || null;
+        if (!ct0) throw new Error('Not logged into x.com (no ct0 cookie)');
+
+        const normalizeFlags = (value) => {
+          if (Array.isArray(value)) {
+            return Object.fromEntries(value.filter((key) => typeof key === 'string' && key).map((key) => [key, true]));
+          }
+          if (!value || typeof value !== 'object') return {};
+          return Object.fromEntries(Object.entries(value).filter(([key, flag]) => typeof key === 'string' && key && typeof flag === 'boolean'));
+        };
+
+        const parseOperationFromBundleText = (text, operationName) => {
+          if (!text || !operationName) return null;
+          const esc = operationName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          const reA = new RegExp('queryId:"([A-Za-z0-9_-]+)"[^}]{0,400}operationName:"' + esc + '"');
+          const reB = new RegExp('operationName:"' + esc + '"[^}]{0,400}queryId:"([A-Za-z0-9_-]+)"');
+          let queryId = null;
+          let matchIndex = -1;
+          const mA = text.match(reA);
+          if (mA && typeof mA.index === 'number') { queryId = mA[1]; matchIndex = mA.index; }
+          else {
+            const mB = text.match(reB);
+            if (mB && typeof mB.index === 'number') { queryId = mB[1]; matchIndex = mB.index; }
+          }
+          if (!queryId) return null;
+          const win = text.slice(Math.max(0, matchIndex - 500), Math.min(text.length, matchIndex + 1500));
+          const quotedKeys = (source) => source ? Array.from(source.matchAll(/"([^"]+)"/g)).map((m) => m[1]) : [];
+          const flags = (keys) => Object.fromEntries((keys || []).filter((k) => typeof k === 'string' && k).map((k) => [k, true]));
+          return {
+            queryId,
+            features: flags(quotedKeys(win.match(/featureSwitches:\[([^\]]*)\]/)?.[1])),
+            fieldToggles: flags(quotedKeys(win.match(/fieldToggles:\[([^\]]*)\]/)?.[1])),
+          };
+        };
+
+        let resolved = null;
+        try {
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), 5000);
           try {
-            // Author from user name link
-            const userLinks = article.querySelectorAll('a[role="link"]');
-            let screenName = 'unknown';
-            for (const link of userLinks) {
-              const href = link.getAttribute('href') || '';
-              if (href.match(/^\/[A-Za-z0-9_]+$/) && !href.startsWith('/search') && !href.startsWith('/i/')) {
-                screenName = href.replace('/', '');
-                break;
+            const ghResp = await fetch('https://raw.githubusercontent.com/fa0311/twitter-openapi/refs/heads/main/src/config/placeholder.json', { signal: controller.signal });
+            clearTimeout(timeout);
+            if (ghResp.ok) {
+              const data = await ghResp.json();
+              const entry = data && data.SearchTimeline;
+              if (entry && entry.queryId) {
+                resolved = {
+                  queryId: entry.queryId,
+                  features: normalizeFlags(entry.features ?? entry.featureSwitches),
+                  fieldToggles: normalizeFlags(entry.fieldToggles),
+                };
               }
             }
+          } catch { clearTimeout(timeout); }
+        } catch {}
 
-            // Tweet text
-            const textEl = article.querySelector('div[data-testid="tweetText"]');
-            const text = textEl ? textEl.textContent.trim() : '';
-
-            // Tweet ID from status link
-            let id = '';
-            let statusHref = '';
-            const allLinks = article.querySelectorAll('a[href*="/status/"]');
-            for (const link of allLinks) {
-              const href = link.getAttribute('href') || '';
-              const m = href.match(/\/status\/(\d+)/);
-              if (m) {
-                id = m[1];
-                statusHref = href;
-                break;
-              }
+        if (!resolved) {
+          try {
+            const scripts = Array.from(document.scripts).map(s => s.src).filter(Boolean)
+              .concat(performance.getEntriesByType('resource').map(r => r.name).filter(r => r.includes('client-web') && r.endsWith('.js')));
+            const uniqueScripts = Array.from(new Set(scripts));
+            const candidates = Array.from(new Set([...uniqueScripts.slice(0, 15), ...uniqueScripts.slice(-15)]));
+            for (const scriptUrl of candidates) {
+              try {
+                const text = await (await fetch(scriptUrl)).text();
+                const operation = parseOperationFromBundleText(text, 'SearchTimeline');
+                if (operation) { resolved = operation; break; }
+              } catch {}
             }
-
-            if (!id) continue;
-
-            // Engagement metrics
-            const getMetric = (testId) => {
-              const btn = article.querySelector('button[data-testid="' + testId + '"]');
-              if (!btn) return 0;
-              const span = btn.querySelector('span[data-testid="app-text-transition-container"]');
-              if (!span) return 0;
-              const val = span.textContent.trim();
-              if (!val) return 0;
-              if (val.includes('K')) return Math.round(parseFloat(val) * 1000);
-              if (val.includes('M')) return Math.round(parseFloat(val) * 1000000);
-              return parseInt(val, 10) || 0;
-            };
-
-            // Views from analytics link
-            const analyticsLink = article.querySelector('a[href*="/analytics"]');
-            let views = 0;
-            if (analyticsLink) {
-              const viewsText = analyticsLink.textContent.trim();
-              if (viewsText.includes('K')) views = Math.round(parseFloat(viewsText) * 1000);
-              else if (viewsText.includes('M')) views = Math.round(parseFloat(viewsText) * 1000000);
-              else views = parseInt(viewsText, 10) || 0;
-            }
-
-            results.push({
-              id,
-              author: screenName,
-              text: text.slice(0, 280),
-              likes: getMetric('like') || getMetric('unlike'),
-              retweets: getMetric('retweet') || getMetric('unretweet'),
-              replies: getMetric('reply'),
-              views,
-              url: 'https://x.com' + statusHref,
-            });
           } catch {}
         }
 
-        if (results.length === 0) {
-          throw new Error('No tweets found. X may require login or changed their DOM structure.');
+        const operation = {
+          queryId: resolved?.queryId && /^[A-Za-z0-9_-]+$/.test(resolved.queryId) ? resolved.queryId : SEARCH_TIMELINE_OPERATION.queryId,
+          features: Object.keys(normalizeFlags(resolved?.features)).length ? normalizeFlags(resolved.features) : SEARCH_TIMELINE_OPERATION.features,
+          fieldToggles: Object.keys(normalizeFlags(resolved?.fieldToggles)).length ? normalizeFlags(resolved.fieldToggles) : SEARCH_TIMELINE_OPERATION.fieldToggles,
+        };
+
+        const headers = {
+          Authorization: 'Bearer ' + decodeURIComponent(BEARER_TOKEN),
+          'X-Csrf-Token': ct0,
+          'X-Twitter-Auth-Type': 'OAuth2Session',
+          'X-Twitter-Active-User': 'yes',
+          'Content-Type': 'application/json',
+        };
+
+        function extractMedia(legacy) {
+          const media = legacy?.extended_entities?.media || legacy?.entities?.media;
+          if (!Array.isArray(media) || media.length === 0) {
+            return { has_media: false, media_urls: [], media_posters: [] };
+          }
+          const urls = [];
+          const posters = [];
+          for (const m of media) {
+            if (!m) continue;
+            if (m.type === 'video' || m.type === 'animated_gif') {
+              const variants = m.video_info?.variants || [];
+              const mp4 = variants.find((v) => v?.content_type === 'video/mp4');
+              const url = mp4?.url || m.media_url_https;
+              if (url) {
+                urls.push(url);
+                posters.push(m.media_url_https || url);
+              }
+            } else if (m.media_url_https) {
+              urls.push(m.media_url_https);
+              posters.push(m.media_url_https);
+            }
+          }
+          return { has_media: urls.length > 0, media_urls: urls, media_posters: posters };
         }
 
-        return results;
+        function unwrapTweetResult(result) {
+          if (!result) return null;
+          if (result.__typename === 'TweetWithVisibilityResults' && result.tweet) return result.tweet;
+          if (result.tweet) return result.tweet;
+          return result;
+        }
+
+        function tweetToRow(result, seen) {
+          const tweet = unwrapTweetResult(result);
+          if (!tweet?.rest_id || seen.has(tweet.rest_id)) return null;
+          seen.add(tweet.rest_id);
+          const tweetUser = tweet.core?.user_results?.result;
+          return {
+            id: tweet.rest_id,
+            author: tweetUser?.core?.screen_name || tweetUser?.legacy?.screen_name || '',
+            text: tweet.note_tweet?.note_tweet_results?.result?.text || tweet.legacy?.full_text || '',
+            likes: tweet.legacy?.favorite_count || 0,
+            retweets: tweet.legacy?.retweet_count || 0,
+            replies: tweet.legacy?.reply_count || 0,
+            views: tweet.views?.count || '0',
+            url: 'https://x.com/i/status/' + tweet.rest_id,
+            ...extractMedia(tweet.legacy),
+          };
+        }
+
+        function parseSearchTimeline(data, seen) {
+          const rows = [];
+          let nextCursor = null;
+          const instructions = data?.data?.search_by_raw_query?.search_timeline?.timeline?.instructions || [];
+          const visit = (value) => {
+            if (!value || typeof value !== 'object') return;
+            if (value.tweet_results?.result) {
+              const row = tweetToRow(value.tweet_results.result, seen);
+              if (row) rows.push(row);
+            }
+            if ((value.entryType === 'TimelineTimelineCursor' || value.__typename === 'TimelineTimelineCursor')
+              && (value.cursorType === 'Bottom' || value.cursorType === 'ShowMore') && value.value) {
+              nextCursor = value.value;
+            }
+            if (Array.isArray(value)) {
+              for (const item of value) visit(item);
+              return;
+            }
+            for (const child of Object.values(value)) {
+              if (child && typeof child === 'object') visit(child);
+            }
+          };
+          visit(instructions);
+          return { rows, nextCursor };
+        }
+
+        const results = [];
+        const seen = new Set();
+        let cursor = null;
+        for (let i = 0; i < 100 && results.length < limit; i++) {
+          const fetchCount = limit - results.length + 10;
+          const variables = { rawQuery: query, count: fetchCount, querySource: 'typed_query', product: 'Top' };
+          if (cursor) variables.cursor = cursor;
+          const requestUrl = '/i/api/graphql/' + operation.queryId + '/SearchTimeline';
+          const requestBody = JSON.stringify({ variables, features: operation.features, fieldToggles: operation.fieldToggles });
+          const r = await fetch(requestUrl, { method: 'POST', headers, credentials: 'include', body: requestBody });
+          let data = r.ok ? await r.json() : { error: r.status };
+          if (data && !data.data && (data.user || data.search_by_raw_query)) data = { data };
+          if (data?.error) {
+            if (results.length === 0) throw new Error('HTTP ' + data.error + ': Failed to fetch SearchTimeline. queryId may have expired.');
+            break;
+          }
+          const { rows, nextCursor } = parseSearchTimeline(data, seen);
+          results.push(...rows);
+          if (!nextCursor || nextCursor === cursor) break;
+          cursor = nextCursor;
+        }
+        return results.slice(0, limit);
       })()
