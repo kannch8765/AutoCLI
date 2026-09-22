@@ -6,7 +6,6 @@ description: "淘宝商品搜索"
 domain: s.taobao.com
 strategy: cookie
 browser: true
-siteSession: persistent
 
 args:
   query:

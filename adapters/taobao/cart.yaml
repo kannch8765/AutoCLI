@@ -6,7 +6,6 @@ description: "查看淘宝购物车"
 domain: cart.taobao.com
 strategy: cookie
 browser: true
-siteSession: persistent
 args:
   limit:
     type: int
@@ -16,7 +15,8 @@ columns: [index, title, price, spec, shop]
 pipeline:
   - navigate: https://www.taobao.com
   - wait: 2
-  - navigate: https://cart.taobao.com/cart.htm
+  - evaluate: |
+      (() => { location.href = 'https://cart.taobao.com/cart.htm'; return []; })()
   - wait: 6
   - scroll:
       times: 3
