@@ -14,7 +14,9 @@ args:
     description: 商品 ID
 columns: [field, value]
 pipeline:
-  - navigate: https://www.taobao.com
+  - navigate:
+      url: https://www.taobao.com
+      settleMs: 0
   - wait: 2
   - evaluate: |
       (() => {

@@ -13,7 +13,9 @@ args:
     description: "返回数量 (max 50)"
 columns: [index, title, price, spec, shop]
 pipeline:
-  - navigate: https://www.taobao.com
+  - navigate:
+      url: https://www.taobao.com
+      settleMs: 0
   - wait: 2
   - evaluate: |
       (() => { location.href = 'https://cart.taobao.com/cart.htm'; return []; })()
