@@ -18,7 +18,9 @@ args:
     description: "返回评价数量 (max 20)"
 columns: [rank, user, content, date, spec]
 pipeline:
-  - navigate: https://www.taobao.com
+  - navigate:
+      url: https://www.taobao.com
+      settleMs: 0
   - wait: 2
   - evaluate: |
       (() => {
