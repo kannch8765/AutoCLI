@@ -6,7 +6,6 @@ description: "淘宝商品评价"
 domain: item.taobao.com
 strategy: cookie
 browser: true
-siteSession: persistent
 args:
   id:
     positional: true

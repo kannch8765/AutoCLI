@@ -1,3 +1,4 @@
+use autocli_core::SiteSession;
 use autocli_discovery::yaml_parser::parse_yaml_adapter;
 
 #[test]
@@ -14,5 +15,6 @@ fn parses_taobao_opencli_ports() {
         assert_eq!(command.site, "taobao");
         assert_eq!(command.name, name);
         assert!(command.browser);
+        assert_eq!(command.site_session, SiteSession::Ephemeral);
     }
 }
