@@ -1,0 +1,85 @@
+# Adapter logic derived from OpenCLI (https://github.com/jackwener/opencli)
+# Original author: jackwener | License: Apache-2.0
+site: taobao
+name: search
+description: "淘宝商品搜索"
+domain: s.taobao.com
+strategy: cookie
+browser: true
+siteSession: persistent
+
+args:
+  query:
+    positional: true
+    type: string
+    required: true
+    description: 搜索关键词
+  sort:
+    type: string
+    default: default
+    choices: [default, sale, price]
+    description: "排序 (default/sale销量/price价格)"
+  limit:
+    type: int
+    default: 10
+    description: "返回结果数量 (max 40)"
+
+columns: [rank, title, price, sales, shop, location, item_id, url]
+
+pipeline:
+  - navigate: https://www.taobao.com
+  - wait: 2
+  - evaluate: |
+      (() => {
+        const q = ${{ args.query | json }};
+        const sort = ${{ args.sort | default('default') | json }};
+        const sortMap = { default: '', sale: '&sort=sale-desc', price: '&sort=price-asc' };
+        location.href = 'https://s.taobao.com/search?q=' + encodeURIComponent(q) + (sortMap[sort] || '');
+        return [];
+      })()
+  - wait: 8
+  - scroll:
+      times: 3
+      delay: 2000
+  - evaluate: |
+      (async () => {
+        const limit = Math.min(Math.max(Number(${{ args.limit | default(10) | json }}), 1), 40);
+        const normalize = v => (v || '').replace(/\s+/g, ' ').trim();
+        const bodyText = document.body?.innerText || '';
+        if (bodyText.length < 1000 && bodyText.includes('请登录')) {
+          throw new Error('taobao search requires a logged-in Taobao session');
+        }
+        for (let i = 0; i < 30; i++) {
+          if (document.querySelectorAll('[class*="doubleCard--"]').length > 3) break;
+          await new Promise(r => setTimeout(r, 500));
+        }
+        const cards = document.querySelectorAll('[class*="doubleCard--"]');
+        const results = [];
+        const seenTitles = new Set();
+        for (const card of cards) {
+          const titleEl = card.querySelector('[class*="title--"]');
+          const title = titleEl ? normalize(titleEl.textContent) : '';
+          if (!title || title.length < 3 || seenTitles.has(title)) continue;
+          seenTitles.add(title);
+          const intEl = card.querySelector('[class*="priceInt--"]');
+          const floatEl = card.querySelector('[class*="priceFloat--"]');
+          const price = intEl ? '¥' + normalize(intEl.textContent) + (floatEl ? normalize(floatEl.textContent) : '') : '';
+          const salesEl = card.querySelector('[class*="realSales--"]');
+          const sales = salesEl ? normalize(salesEl.textContent) : '';
+          const shopEl = card.querySelector('[class*="shopName--"]');
+          let shop = shopEl ? normalize(shopEl.textContent) : '';
+          shop = shop.replace(/^\d+年老店/, '').replace(/^回头客[\d万]+/, '');
+          const locEls = card.querySelectorAll('[class*="procity--"]');
+          const locationText = Array.from(locEls).map(el => normalize(el.textContent)).join('');
+          let itemId = '';
+          let wrapper = card.parentElement;
+          for (let i = 0; i < 3 && wrapper; i++) {
+            const spmId = wrapper.getAttribute('data-spm-act-id');
+            if (spmId && /^\d{10,}$/.test(spmId)) { itemId = spmId; break; }
+            wrapper = wrapper.parentElement;
+          }
+          results.push({ rank: results.length + 1, title: title.slice(0, 80), price, sales, shop, location: locationText, item_id: itemId, url: itemId ? 'https://item.taobao.com/item.htm?id=' + itemId : '' });
+          if (results.length >= limit) break;
+        }
+        return results;
+      })()
