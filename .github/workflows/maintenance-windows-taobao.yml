@@ -16,6 +16,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
 
       - name: Verify functional parent
         shell: pwsh
@@ -48,7 +50,7 @@ jobs:
           Copy-Item target/x86_64-pc-windows-msvc/release/autocli.exe artifact/autocli.exe
           Copy-Item BUILD-COMMIT.txt artifact/BUILD-COMMIT.txt
           Get-FileHash artifact/autocli.exe -Algorithm SHA256 | ForEach-Object {
-            "AUTCLI_EXE_SHA256=$($_.Hash.ToLower())"
+            "AUTOCLI_EXE_SHA256=$($_.Hash.ToLower())"
           } | Add-Content -Encoding ascii artifact/BUILD-COMMIT.txt
           Get-Content artifact/BUILD-COMMIT.txt
 
