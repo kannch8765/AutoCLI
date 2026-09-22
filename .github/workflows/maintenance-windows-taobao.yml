@@ -1,0 +1,60 @@
+name: Maintenance Windows Build
+
+on:
+  push:
+    branches:
+      - build/taobao-windows-a78a019
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify functional parent
+        shell: pwsh
+        run: |
+          $parent = git rev-parse HEAD^
+          if ($parent -ne "a78a01958c47c6661f14570c020353a7794682e1") {
+            throw "Unexpected functional parent: $parent"
+          }
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Build Windows release
+        run: cargo build --release --target x86_64-pc-windows-msvc
+
+      - name: Write build provenance
+        shell: pwsh
+        run: |
+          @(
+            "BUILD_HEAD=$env:GITHUB_SHA"
+            "FUNCTIONAL_PARENT=a78a01958c47c6661f14570c020353a7794682e1"
+          ) | Set-Content -Encoding ascii BUILD-COMMIT.txt
+
+      - name: Stage artifact
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force artifact | Out-Null
+          Copy-Item target/x86_64-pc-windows-msvc/release/autocli.exe artifact/autocli.exe
+          Copy-Item BUILD-COMMIT.txt artifact/BUILD-COMMIT.txt
+          Get-FileHash artifact/autocli.exe -Algorithm SHA256 | ForEach-Object {
+            "AUTCLI_EXE_SHA256=$($_.Hash.ToLower())"
+          } | Add-Content -Encoding ascii artifact/BUILD-COMMIT.txt
+          Get-Content artifact/BUILD-COMMIT.txt
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: autocli-windows-taobao-a78a019
+          path: artifact/*
+          if-no-files-found: error
