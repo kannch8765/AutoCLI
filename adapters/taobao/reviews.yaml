@@ -1,0 +1,53 @@
+# Adapter logic derived from OpenCLI (https://github.com/jackwener/opencli)
+# Original author: jackwener | License: Apache-2.0
+site: taobao
+name: reviews
+description: "淘宝商品评价"
+domain: item.taobao.com
+strategy: cookie
+browser: true
+siteSession: persistent
+args:
+  id:
+    positional: true
+    type: string
+    required: true
+    description: 商品 ID
+  limit:
+    type: int
+    default: 10
+    description: "返回评价数量 (max 20)"
+columns: [rank, user, content, date, spec]
+pipeline:
+  - navigate: https://www.taobao.com
+  - wait: 2
+  - evaluate: |
+      (() => {
+        const itemId = String(${{ args.id | json }}).trim();
+        if (!/^\d+$/.test(itemId)) throw new Error('id must be a numeric ID');
+        location.href = 'https://item.taobao.com/item.htm?id=' + itemId;
+        return [];
+      })()
+  - wait: 6
+  - evaluate: |
+      (async () => {
+        const itemId = String(${{ args.id | json }}).match(/\d+/)?.[0] || '';
+        const limit = Math.min(Math.max(Number(${{ args.limit | default(10) | json }}), 1), 20);
+        const normalize = v => (v || '').replace(/\s+/g, ' ').trim();
+        let sellerId = '';
+        const pageText = document.documentElement.innerHTML || '';
+        const sellerMatch = pageText.match(/sellerId['":\s]+['"]?(\d+)/) || pageText.match(/userId['":\s]+['"]?(\d+)/) || pageText.match(/shopId['":\s]+['"]?(\d+)/);
+        if (sellerMatch) sellerId = sellerMatch[1];
+        if (!sellerId) { const href = document.querySelector('a[href*="shopId="], a[href*="seller_id="], a[href*="userId="]')?.getAttribute('href') || ''; const m = href.match(/(?:shopId|seller_id|userId)=(\d+)/); if (m) sellerId = m[1]; }
+        const url = 'https://rate.tmall.com/list_detail_rate.htm?itemId=' + itemId + (sellerId ? '&sellerId=' + sellerId : '') + '&order=3&currentPage=1&append=0&content=1&tagId=&posi=&picture=&groupValue=&needFold=0&_ksTS=' + Date.now();
+        try {
+          const results = await new Promise((resolve) => {
+            const cbName = '_ocli_rate_' + Date.now(); let settled = false;
+            const cleanup = (value) => { if (settled) return; settled = true; delete window[cbName]; script.remove(); resolve(value); };
+            window[cbName] = (payload) => { const list = payload?.rateDetail?.rateList || []; cleanup(list.slice(0, limit).map((item, i) => ({ rank: i + 1, user: (item.displayUserNick || item.userNick || '').slice(0, 15), content: normalize(item.rateContent || '').slice(0, 150), date: (item.rateDate || '').slice(0, 10), spec: normalize(item.auctionSku || '').slice(0, 40) }))); };
+            const script = document.createElement('script'); script.src = url + '&callback=' + cbName; script.onerror = () => cleanup([]); document.head.appendChild(script); setTimeout(() => cleanup([]), 10000);
+          });
+          if (results.length > 0) return results;
+        } catch {}
+        return [];
+      })()

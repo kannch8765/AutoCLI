@@ -1,0 +1,65 @@
+# Adapter logic derived from OpenCLI (https://github.com/jackwener/opencli)
+# Original author: jackwener | License: Apache-2.0
+site: taobao
+name: add-cart
+description: "淘宝加入购物车"
+domain: item.taobao.com
+strategy: cookie
+browser: true
+siteSession: persistent
+args:
+  id:
+    positional: true
+    type: string
+    required: true
+    description: 商品 ID
+  spec:
+    type: string
+    description: "规格关键词，多个规格用空格分隔，模糊匹配"
+  dry-run:
+    type: bool
+    default: false
+    description: "仅预览，不实际加入购物车"
+columns: [status, title, price, selected_spec, item_id]
+pipeline:
+  - navigate: https://www.taobao.com
+  - wait: 2
+  - evaluate: |
+      (() => {
+        const itemId = String(${{ args.id | json }}).trim();
+        if (!/^\d+$/.test(itemId)) throw new Error('id must be a numeric ID');
+        location.href = 'https://item.taobao.com/item.htm?id=' + itemId;
+        return [];
+      })()
+  - wait: 6
+  - evaluate: |
+      (async () => {
+        const itemId = String(${{ args.id | json }}).match(/\d+/)?.[0] || '';
+        const rawSpec = ${{ args.spec | default('') | json }};
+        const specKeywords = rawSpec ? String(rawSpec).split(/\s+/).filter(Boolean) : [];
+        const dryRun = Boolean(${{ args['dry-run'] | default(false) | json }});
+        const normalize = v => (v || '').replace(/\s+/g, ' ').trim();
+        const titleEl = document.querySelector('[class*="mainTitle--"]');
+        const title = titleEl ? normalize(titleEl.textContent) : document.title.split('-')[0].trim();
+        const text = document.body?.innerText || '';
+        const priceMatch = text.match(/[￥¥]\s*(\d+(?:\.\d{1,2})?)/);
+        const price = priceMatch ? '¥' + priceMatch[1] : '';
+        if (dryRun) return [{ status: 'dry-run', title: title.slice(0, 80), price, selected_spec: specKeywords.join(' ') || '(未选择)', item_id: itemId }];
+        const items = document.querySelectorAll('[class*="valueItem--"]'); const selected = []; const groups = new Map();
+        for (const item of items) { const group = item.closest('[class*="skuItem--"], [class*="prop--"]') || item.parentElement; const key = group?.className?.substring(0, 30) || 'default'; if (!groups.has(key)) groups.set(key, []); groups.get(key).push(item); }
+        if (specKeywords.length === 0) {
+          for (const [, groupItems] of groups) { if (groupItems.some(el => el.className.includes('selected') || el.className.includes('active'))) continue; for (const item of groupItems) { if (!item.className.includes('disabled') && !item.className.includes('gray')) { item.click(); selected.push(normalize(item.textContent).substring(0, 40)); break; } } }
+        } else {
+          for (const [, groupItems] of groups) { let best = null; let bestScore = 0; for (const item of groupItems) { if (item.className.includes('disabled')) continue; const t = normalize(item.textContent); const score = specKeywords.filter(kw => t.includes(kw)).length; if (score > bestScore) { bestScore = score; best = item; } } if (best && bestScore > 0) { best.click(); selected.push(normalize(best.textContent).substring(0, 40)); } }
+        }
+        await new Promise(r => setTimeout(r, 1000));
+        let clicked = false;
+        for (const el of document.querySelectorAll('button, [role="button"], a, div, span')) { const t = (el.textContent || '').trim(); if ((t === '加入购物车' || t === '加入 购物车') && el.children.length < 5) { el.click(); clicked = true; break; } }
+        if (!clicked) return [{ status: '? 未确认', title: title.slice(0,80), price, selected_spec: selected.join(' | ') || '(未选择)', item_id: itemId }];
+        let result = 'unknown';
+        for (let i = 0; i < 10; i++) { await new Promise(r => setTimeout(r, 500)); const t = document.body?.innerText || ''; if (t.includes('已加入购物车') || t.includes('商品已成功') || t.includes('去购物车结算') || t.includes('去购物车')) { result = 'success'; break; } if (t.includes('请选择') || t.includes('请先选择')) { result = 'need_spec'; break; } if (t.includes('请登录')) { result = 'login_required'; break; } }
+        if (result === 'login_required') throw new Error('taobao add-cart requires a logged-in Taobao session');
+        if (result === 'unknown' && location.href.includes('cart')) result = 'success';
+        const status = result === 'success' ? '✓ 已加入购物车' : result === 'need_spec' ? '✗ 需要选择更多规格' : '? 未确认';
+        return [{ status, title: title.slice(0,80), price, selected_spec: selected.join(' | ') || '(未选择)', item_id: itemId }];
+      })()
