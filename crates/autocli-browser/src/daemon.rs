@@ -21,8 +21,10 @@ use tracing::{debug, error, info, warn};
 
 use crate::types::{DaemonCommand, DaemonResult};
 
-/// Command response timeout.
+/// Fallback command response timeout when an older client sends no deadline.
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
+const COMMAND_RESULT_UNKNOWN_HINT: &str =
+    "The browser may still be completing the command. Do not blindly retry a write; wait for the session to settle first.";
 /// WebSocket heartbeat interval.
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
 /// Idle shutdown threshold.
@@ -387,6 +389,31 @@ async fn status_handler(State(state): State<Arc<DaemonState>>) -> impl IntoRespo
     }))
 }
 
+
+fn command_timeout_for(cmd: &DaemonCommand) -> Duration {
+    if let Some(deadline_at) = cmd.deadline_at {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        return Duration::from_millis(deadline_at.saturating_sub(now_ms).max(1_000));
+    }
+    if let Some(timeout) = cmd.timeout {
+        return Duration::from_secs(timeout.max(1));
+    }
+    COMMAND_TIMEOUT
+}
+
+fn command_result_unknown(id: &str, message: impl Into<String>) -> serde_json::Value {
+    json!({
+        "id": id,
+        "ok": false,
+        "error": message.into(),
+        "errorCode": "command_result_unknown",
+        "errorHint": COMMAND_RESULT_UNKNOWN_HINT,
+    })
+}
+
 /// POST /command — accept a command from the CLI and forward to the extension.
 async fn command_handler(
     State(state): State<Arc<DaemonState>>,
@@ -438,8 +465,10 @@ async fn command_handler(
         }
     }
 
-    // Wait for result with timeout
-    match tokio::time::timeout(COMMAND_TIMEOUT, rx).await {
+    // Wait for the extension using the same absolute command deadline the CLI
+    // sent. A post-dispatch timeout is an unknown outcome, not a safe retry.
+    let command_timeout = command_timeout_for(&cmd);
+    match tokio::time::timeout(command_timeout, rx).await {
         Ok(Ok(result)) => {
             let status = if result.ok {
                 StatusCode::OK
@@ -449,14 +478,23 @@ async fn command_handler(
             (status, Json(serde_json::to_value(result).unwrap_or(json!({}))))
         }
         Ok(Err(_)) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": "Command channel closed unexpectedly" })),
+            StatusCode::BAD_GATEWAY,
+            Json(command_result_unknown(
+                &cmd_id,
+                "Command channel closed after dispatch; browser outcome is unknown",
+            )),
         ),
         Err(_) => {
             state.pending_commands.write().await.remove(&cmd_id);
             (
                 StatusCode::GATEWAY_TIMEOUT,
-                Json(json!({ "error": "Command timed out" })),
+                Json(command_result_unknown(
+                    &cmd_id,
+                    format!(
+                        "Command timed out after dispatch (budget={}ms)",
+                        command_timeout.as_millis()
+                    ),
+                )),
             )
         }
     }
@@ -834,6 +872,23 @@ async fn check_update_handler() -> impl IntoResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn command_timeout_prefers_client_duration_when_no_deadline() {
+        let cmd = DaemonCommand::new("exec").with_timeout(7);
+        assert_eq!(command_timeout_for(&cmd), Duration::from_secs(7));
+    }
+
+    #[test]
+    fn unknown_outcome_envelope_is_machine_readable() {
+        let value = command_result_unknown("cmd-1", "timed out");
+        assert_eq!(value.get("id").and_then(|v| v.as_str()), Some("cmd-1"));
+        assert_eq!(
+            value.get("errorCode").and_then(|v| v.as_str()),
+            Some("command_result_unknown")
+        );
+        assert!(value.get("errorHint").and_then(|v| v.as_str()).is_some());
+    }
 
     #[tokio::test]
     async fn test_daemon_start_and_shutdown() {

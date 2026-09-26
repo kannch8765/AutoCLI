@@ -47,6 +47,22 @@ impl BrowserBridge {
         Ok(self.connect_daemon_page_with_session(session, "adapter", site_session).await?)
     }
 
+    pub async fn connect_adapter_session_with_timeout(
+        &mut self,
+        session: &str,
+        site_session: SiteSession,
+        command_timeout_seconds: u64,
+    ) -> Result<Arc<dyn IPage>, CliError> {
+        Ok(self
+            .connect_daemon_page_with_session_and_timeout(
+                session,
+                "adapter",
+                site_session,
+                Some(command_timeout_seconds),
+            )
+            .await?)
+    }
+
     /// Connect and return a fresh ephemeral concrete `DaemonPage` so callers can
     /// use daemon-specific methods (e.g. `read_article`) not on the `IPage` trait.
     pub async fn connect_daemon_page(&mut self) -> Result<Arc<DaemonPage>, CliError> {
@@ -59,6 +75,17 @@ impl BrowserBridge {
         session: &str,
         surface: &str,
         site_session: SiteSession,
+    ) -> Result<Arc<DaemonPage>, CliError> {
+        self.connect_daemon_page_with_session_and_timeout(session, surface, site_session, None)
+            .await
+    }
+
+    async fn connect_daemon_page_with_session_and_timeout(
+        &mut self,
+        session: &str,
+        surface: &str,
+        site_session: SiteSession,
+        command_timeout_seconds: Option<u64>,
     ) -> Result<Arc<DaemonPage>, CliError> {
         let client = Arc::new(DaemonClient::new(self.port));
 
@@ -85,7 +112,13 @@ impl BrowserBridge {
 
         // Step 3: Wait up to 5s for extension to connect
         if self.poll_extension(&client, EXTENSION_INITIAL_WAIT, false).await {
-            return Ok(Arc::new(DaemonPage::new(client, session, surface, site_session)));
+            return Ok(Arc::new(DaemonPage::new_with_timeout(
+                client,
+                session,
+                surface,
+                site_session,
+                command_timeout_seconds,
+            )));
         }
 
         // Step 4: Extension not connected — try to wake up Chrome
@@ -95,7 +128,13 @@ impl BrowserBridge {
 
         // Step 5: Wait remaining 25s with progress
         if self.poll_extension(&client, EXTENSION_REMAINING_WAIT, true).await {
-            return Ok(Arc::new(DaemonPage::new(client, session, surface, site_session)));
+            return Ok(Arc::new(DaemonPage::new_with_timeout(
+                client,
+                session,
+                surface,
+                site_session,
+                command_timeout_seconds,
+            )));
         }
 
         warn!("Chrome extension is not connected to the daemon");

@@ -16,6 +16,9 @@ pub struct DaemonClient {
 const RETRY_DELAYS_MS: [u64; 3] = [200, 500, 1000];
 const TRANSPORT_MAX_ATTEMPTS: usize = 4;
 const SEMANTIC_RETRY_DELAY_MS: u64 = 1500;
+const HTTP_TIMEOUT_MARGIN_MS: u64 = 10_000;
+const COMMAND_RESULT_UNKNOWN_HINT: &str =
+    "The browser may still be completing the command. Do not blindly retry a write; wait for the session to settle first.";
 
 fn is_semantic_retry_code(code: Option<&str>) -> bool {
     matches!(code, Some("attach_failed" | "tab_gone"))
@@ -29,10 +32,40 @@ fn browser_command_error(result: DaemonResult) -> CliError {
     )
 }
 
+fn unknown_outcome_error(message: impl Into<String>) -> CliError {
+    CliError::browser_command(
+        message.into(),
+        Some("command_result_unknown".into()),
+        Some(COMMAND_RESULT_UNKNOWN_HINT.into()),
+    )
+}
+
+fn now_epoch_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+fn command_remaining_ms(cmd: &DaemonCommand) -> Result<u64, CliError> {
+    if let Some(deadline_at) = cmd.deadline_at {
+        let now = now_epoch_ms();
+        if now >= deadline_at {
+            return Err(unknown_outcome_error(
+                "Browser command deadline exhausted before transport dispatch.",
+            ));
+        }
+        return Ok((deadline_at - now).max(1_000));
+    }
+    Ok(cmd.timeout.unwrap_or(120).saturating_mul(1000).max(1_000))
+}
+
 impl DaemonClient {
     /// Create a new client pointing at the given port on localhost.
     pub fn new(port: u16) -> Self {
         let client = reqwest::Client::builder()
+            // Keep bounded health/status requests; command requests override
+            // this with their absolute-deadline-derived timeout below.
             .timeout(Duration::from_secs(30))
             .build()
             .expect("failed to build reqwest client");
@@ -63,11 +96,17 @@ impl DaemonClient {
                 "sending daemon command"
             );
 
+            let remaining_ms = command_remaining_ms(&cmd)?;
             let response = self
                 .client
                 .post(&url)
                 .header("X-AutoCLI", "1")
                 .json(&cmd)
+                // Match OpenCLI: let the daemon's structured timeout win before
+                // the HTTP client aborts locally.
+                .timeout(Duration::from_millis(
+                    remaining_ms.saturating_add(HTTP_TIMEOUT_MARGIN_MS),
+                ))
                 .send()
                 .await;
 
@@ -101,23 +140,35 @@ impl DaemonClient {
                         return Err(browser_command_error(result));
                     }
 
-                    if status.is_client_error() {
+                    if status == reqwest::StatusCode::SERVICE_UNAVAILABLE {
+                        // Our daemon returns 503 only before command dispatch when
+                        // the extension is not connected. Same-id retry is safe.
+                        last_err = Some(format!("HTTP {status}: {body}"));
+                    } else if status.is_client_error() {
                         return Err(CliError::command_execution(format!(
                             "Command error (HTTP {status}): {body}"
                         )));
-                    }
-
-                    // 5xx / malformed success responses retain AutoCLI's
-                    // transport retry behavior. This is separate from the
-                    // semantic attach/tab retry above.
-                    last_err = Some(if status.is_success() {
-                        format!("Failed to parse daemon response: {body}")
                     } else {
-                        format!("HTTP {status}: {body}")
-                    });
+                        // Once the daemon answered after dispatch (or produced a
+                        // malformed success), outcome is ambiguous. Current
+                        // OpenCLI never blindly replays this class.
+                        return Err(unknown_outcome_error(if status.is_success() {
+                            format!("Failed to parse daemon response: {body}")
+                        } else {
+                            format!("Ambiguous daemon response (HTTP {status}): {body}")
+                        }));
+                    }
                 }
                 Err(e) => {
-                    last_err = Some(format!("Request error: {e}"));
+                    if e.is_connect() {
+                        // Connection establishment failed before the daemon could
+                        // dispatch anything; retry the SAME command id.
+                        last_err = Some(format!("Request connect error: {e}"));
+                    } else {
+                        return Err(unknown_outcome_error(format!(
+                            "Browser command transport ended after dispatch may have started: {e}"
+                        )));
+                    }
                 }
             }
 
@@ -126,6 +177,14 @@ impl DaemonClient {
                     "Failed to send command after {TRANSPORT_MAX_ATTEMPTS} transport attempts: {}",
                     last_err.unwrap_or_else(|| "unknown error".into())
                 )));
+            }
+
+            if let Some(deadline) = cmd.deadline_at {
+                if now_epoch_ms() >= deadline {
+                    return Err(unknown_outcome_error(
+                        "Browser command deadline exhausted across transport retries.",
+                    ));
+                }
             }
 
             let delay_ms = RETRY_DELAYS_MS[transport_attempt - 1];
@@ -281,6 +340,17 @@ mod tests {
         let ids = ids.lock().unwrap();
         assert_eq!(ids.len(), 2);
         assert_ne!(ids[0], ids[1], "semantic retry must mint a fresh id");
+    }
+
+    #[tokio::test]
+    async fn exhausted_deadline_fails_before_transport_dispatch() {
+        let client = DaemonClient::new(19999);
+        let err = client
+            .send_command(DaemonCommand::new("exec").with_deadline_at(1))
+            .await
+            .unwrap_err();
+
+        assert_eq!(err.browser_error_code(), Some("command_result_unknown"));
     }
 
     #[tokio::test]

@@ -24,6 +24,10 @@ export interface Command {
   surface?: 'browser' | 'adapter';
   /** Adapter site-session lifecycle. Persistent adapter sessions do not idle-expire. */
   siteSession?: 'ephemeral' | 'persistent';
+  /** Daemon-side command timeout in seconds (legacy duration form). */
+  timeout?: number;
+  /** Absolute command deadline (epoch ms); preferred over timeout. */
+  deadlineAt?: number;
   /** URL to navigate to (navigate action) */
   url?: string;
   /** Sub-operation for tabs: list, new, close, select */

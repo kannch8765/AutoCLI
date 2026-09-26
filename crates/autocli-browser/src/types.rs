@@ -15,6 +15,10 @@ pub struct DaemonCommand {
     pub surface: Option<String>,
     #[serde(rename = "siteSession", skip_serializing_if = "Option::is_none")]
     pub site_session: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<u64>,
+    #[serde(rename = "deadlineAt", skip_serializing_if = "Option::is_none")]
+    pub deadline_at: Option<u64>,
     #[serde(rename = "tabId", skip_serializing_if = "Option::is_none")]
     pub tab_id: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -35,6 +39,8 @@ impl DaemonCommand {
             session: None,
             surface: None,
             site_session: None,
+            timeout: None,
+            deadline_at: None,
             tab_id: None,
             op: None,
             index: None,
@@ -64,6 +70,16 @@ impl DaemonCommand {
 
     pub fn with_site_session(mut self, site_session: impl Into<String>) -> Self {
         self.site_session = Some(site_session.into());
+        self
+    }
+
+    pub fn with_timeout(mut self, timeout: u64) -> Self {
+        self.timeout = Some(timeout);
+        self
+    }
+
+    pub fn with_deadline_at(mut self, deadline_at: u64) -> Self {
+        self.deadline_at = Some(deadline_at);
         self
     }
 
@@ -170,12 +186,16 @@ mod tests {
         let cmd = DaemonCommand::new("exec")
             .with_session("site:rednote:run-1")
             .with_surface("adapter")
-            .with_site_session("ephemeral");
+            .with_site_session("ephemeral")
+            .with_timeout(60)
+            .with_deadline_at(1_700_000_000_000);
         let value = serde_json::to_value(cmd).expect("serialize daemon command");
 
         assert_eq!(value.get("session").and_then(|v| v.as_str()), Some("site:rednote:run-1"));
         assert_eq!(value.get("surface").and_then(|v| v.as_str()), Some("adapter"));
         assert_eq!(value.get("siteSession").and_then(|v| v.as_str()), Some("ephemeral"));
+        assert_eq!(value.get("timeout").and_then(|v| v.as_u64()), Some(60));
+        assert_eq!(value.get("deadlineAt").and_then(|v| v.as_u64()), Some(1_700_000_000_000));
         assert!(value.get("workspace").is_none());
     }
 
