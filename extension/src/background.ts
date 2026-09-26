@@ -871,6 +871,21 @@ async function listAutomationWebTabs(leaseKey: string): Promise<chrome.tabs.Tab[
 }
 
 /**
+ * Derive the per-command CDP deadline from the absolute deadline (preferred)
+ * or legacy timeout. Undercut by 5s so the extension's specific CDP error can
+ * reach the CLI before the daemon's generic command timer fires.
+ */
+function commandCdpTimeoutMs(cmd: Command): number | undefined {
+  if (typeof cmd.deadlineAt === 'number' && cmd.deadlineAt > 0) {
+    return Math.max(10_000, cmd.deadlineAt - Date.now() - 5_000);
+  }
+  if (typeof cmd.timeout === 'number' && cmd.timeout > 0) {
+    return Math.max(10_000, cmd.timeout * 1000 - 5_000);
+  }
+  return undefined;
+}
+
+/**
  * Current OpenCLI classifies debugger failures at the extension boundary so
  * the client can distinguish safe semantic retries from unknown outcomes.
  */
@@ -896,7 +911,12 @@ async function handleExec(cmd: Command, leaseKey: string): Promise<Result> {
     // Current OpenCLI reserves aggressive attach retry for the interactive
     // browser surface; adapters use the normal attach policy.
     const aggressive = getSurfaceFromKey(leaseKey) === 'browser';
-    const data = await executor.evaluateAsync(tabId, cmd.code, aggressive);
+    const data = await executor.evaluateAsync(
+      tabId,
+      cmd.code,
+      aggressive,
+      commandCdpTimeoutMs(cmd),
+    );
     return { id: cmd.id, ok: true, data };
   } catch (err) {
     return errorResult(cmd.id, err);
@@ -1156,10 +1176,11 @@ async function handleCdp(cmd: Command, leaseKey: string): Promise<Result> {
   try {
     const aggressive = getSessionFromKey(leaseKey).startsWith('operate:');
     await executor.ensureAttached(tabId, aggressive);
-    const data = await chrome.debugger.sendCommand(
+    const data = await executor.sendDebuggerCommand(
       { tabId },
       cmd.cdpMethod,
       cmd.cdpParams ?? {},
+      commandCdpTimeoutMs(cmd),
     );
     return { id: cmd.id, ok: true, data };
   } catch (err) {
@@ -1210,7 +1231,7 @@ async function handleReadArticle(cmd: Command, leaseKey: string): Promise<Result
         reset();
         cap = setTimeout(() => done('capped'), 3000);
       })
-    `);
+    `, false, commandCdpTimeoutMs(cmd));
   } catch {
     // DOM-stability is best-effort; extraction below is the real gate.
   }

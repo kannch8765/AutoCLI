@@ -4,6 +4,7 @@ use autocli_browser::BrowserBridge;
 use serde_json::Value;
 use std::sync::Arc;
 use std::collections::HashMap;
+use std::time::Duration;
 
 /// Get daemon port from env or default
 
@@ -20,6 +21,11 @@ fn daemon_port() -> u16 {
         .and_then(|s| s.parse().ok())
         .unwrap_or(19925)
 }
+
+/// Runtime ceiling padding copied from current OpenCLI. The adapter may use
+/// the full configured browser timeout; keep extra room for close-window and
+/// result/error propagation instead of cancelling cleanup at the same instant.
+const RUNTIME_TIMEOUT_PADDING_SECONDS: u64 = 30;
 
 /// Get command timeout from env or command config or default (60s)
 fn command_timeout(cmd: &CliCommand) -> u64 {
@@ -94,19 +100,24 @@ pub async fn execute_command(
     tracing::info!(site = %cmd.site, name = %cmd.name, "Executing command");
 
     let timeout_secs = command_timeout(cmd);
+    let runtime_timeout_secs = if cmd.needs_browser() {
+        timeout_secs.saturating_add(RUNTIME_TIMEOUT_PADDING_SECONDS)
+    } else {
+        timeout_secs
+    };
 
     let result = tokio::time::timeout(
-        std::time::Duration::from_secs(timeout_secs),
-        execute_command_inner(cmd, kwargs),
+        Duration::from_secs(runtime_timeout_secs),
+        execute_command_inner(cmd, kwargs, timeout_secs),
     )
     .await;
 
     match result {
         Ok(inner) => inner,
         Err(_) => Err(CliError::timeout(format!(
-            "Command '{}' timed out after {}s",
+            "Command '{}' exceeded its {}s runtime ceiling",
             cmd.full_name(),
-            timeout_secs
+            runtime_timeout_secs
         ))),
     }
 }
@@ -114,6 +125,7 @@ pub async fn execute_command(
 async fn execute_command_inner(
     cmd: &CliCommand,
     kwargs: HashMap<String, Value>,
+    timeout_secs: u64,
 ) -> Result<Value, CliError> {
     // Validate adapter-specific arguments before any browser connection or navigation.
     validate_command_args(cmd, &kwargs)?;
@@ -130,7 +142,7 @@ async fn execute_command_inner(
         // have a stable name; every ephemeral adapter run receives a unique one.
         let session = resolve_adapter_browser_session(&cmd.site, cmd.site_session);
         let page = bridge
-            .connect_adapter_session(&session, cmd.site_session)
+            .connect_adapter_session_with_timeout(&session, cmd.site_session, timeout_secs)
             .await?;
 
         // Pre-navigate to domain if set, but ONLY if the pipeline doesn't
@@ -148,16 +160,29 @@ async fn execute_command_inner(
             }
         }
 
-        // Execute
-        let result = if let Some(ref steps) = cmd.pipeline {
-            execute_pipeline(Some(page.clone()), steps, &kwargs, &registry).await
-        } else if cmd.func.is_some() {
-            run_command(cmd, Some(page.clone()), &kwargs, &registry).await
-        } else {
-            Err(CliError::command_execution(format!(
-                "Command '{}' has no pipeline or func",
-                cmd.full_name()
-            )))
+        // Execute within the user-visible browser timeout. Unlike the old outer
+        // timeout, this boundary returns control here so ephemeral cleanup still
+        // runs on timeout/failure. This mirrors OpenCLI's runWithTimeout +
+        // closeWindow success/failure behavior.
+        let command_run = async {
+            if let Some(ref steps) = cmd.pipeline {
+                execute_pipeline(Some(page.clone()), steps, &kwargs, &registry).await
+            } else if cmd.func.is_some() {
+                run_command(cmd, Some(page.clone()), &kwargs, &registry).await
+            } else {
+                Err(CliError::command_execution(format!(
+                    "Command '{}' has no pipeline or func",
+                    cmd.full_name()
+                )))
+            }
+        };
+        let result = match tokio::time::timeout(Duration::from_secs(timeout_secs), command_run).await {
+            Ok(result) => result,
+            Err(_) => Err(CliError::timeout(format!(
+                "Command '{}' timed out after {}s",
+                cmd.full_name(),
+                timeout_secs
+            ))),
         };
 
         // One-shot adapters release their automation window at command end.

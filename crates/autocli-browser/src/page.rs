@@ -18,6 +18,7 @@ pub struct DaemonPage {
     session: String,
     surface: String,
     site_session: SiteSession,
+    command_timeout_seconds: Option<u64>,
     tab_id: RwLock<Option<u64>>,
 }
 
@@ -28,11 +29,22 @@ impl DaemonPage {
         surface: impl Into<String>,
         site_session: SiteSession,
     ) -> Self {
+        Self::new_with_timeout(client, session, surface, site_session, None)
+    }
+
+    pub fn new_with_timeout(
+        client: Arc<DaemonClient>,
+        session: impl Into<String>,
+        surface: impl Into<String>,
+        site_session: SiteSession,
+        command_timeout_seconds: Option<u64>,
+    ) -> Self {
         Self {
             client,
             session: session.into(),
             surface: surface.into(),
             site_session,
+            command_timeout_seconds,
             tab_id: RwLock::new(None),
         }
     }
@@ -48,6 +60,15 @@ impl DaemonPage {
             .with_surface(self.surface.clone());
         if self.surface == "adapter" {
             c = c.with_site_session(lifecycle);
+        }
+        if let Some(timeout_seconds) = self.command_timeout_seconds {
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            c = c
+                .with_timeout(timeout_seconds)
+                .with_deadline_at(now_ms.saturating_add(timeout_seconds.saturating_mul(1000)));
         }
         if let Some(tid) = *self.tab_id.read().await {
             c = c.with_tab_id(tid);
